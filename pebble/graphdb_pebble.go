@@ -86,12 +86,12 @@ func (db *GraphDBPebble) PutEdges(edges []graph.Edge) error {
 }
 
 // RemoveNode removes a node and its associated edges
-func (db *GraphDBPebble) RemoveNode(nodeID string) error {
+func (db *GraphDBPebble) RemoveNode(id string) error {
 	// Remove the node
-	nodeKey := []byte("node:" + nodeID)
+	nodeKey := []byte("node:" + id)
 	err := db.db.Delete(nodeKey, pebble.NoSync)
 	if err != nil {
-		return fmt.Errorf("failed to remove node with ID %s: %v", nodeID, err)
+		return fmt.Errorf("failed to remove node with ID %s: %v", id, err)
 	}
 
 	// Remove edges related to the node
@@ -108,7 +108,7 @@ func (db *GraphDBPebble) RemoveNode(nodeID string) error {
 		}
 		key := iter.Key()
 		parts := bytes.Split(key, []byte(":"))
-		if string(parts[1]) == nodeID || string(parts[2]) == nodeID {
+		if string(parts[1]) == id || string(parts[2]) == id {
 			if err := db.db.Delete(key, pebble.NoSync); err != nil {
 				log.Printf("Failed to remove edge %s: %v", key, err)
 			}
@@ -116,6 +116,39 @@ func (db *GraphDBPebble) RemoveNode(nodeID string) error {
 	}
 
 	return nil
+}
+
+// RemoveNodes removes multiple nodes and their associated edges
+func (db *GraphDBPebble) RemoveNodes(ids ...string) error {
+	batch := db.db.NewBatch()
+
+	// Remove each node and its edges
+	for _, nodeID := range ids {
+		// Remove the node
+		nodeKey := []byte("node:" + nodeID)
+		batch.Delete(nodeKey, pebble.NoSync)
+
+		// Remove edges related to the node
+		iter, err := db.db.NewIter(&pebble.IterOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to create iterator: %v", err)
+		}
+		defer iter.Close()
+
+		// Collect and remove edges
+		for iter.First(); iter.Valid(); iter.Next() {
+			if !bytes.HasPrefix(iter.Key(), []byte("edge:")) {
+				break
+			}
+			key := iter.Key()
+			parts := bytes.Split(key, []byte(":"))
+			if string(parts[1]) == nodeID || string(parts[2]) == nodeID {
+				batch.Delete(key, pebble.NoSync)
+			}
+		}
+	}
+
+	return batch.Commit(pebble.NoSync)
 }
 
 // RemoveEdge removes a specific edge
@@ -132,6 +165,42 @@ func (db *GraphDBPebble) RemoveEdges(edges []graph.Edge) error {
 		batch.Delete(edgeKey, pebble.NoSync)
 	}
 	return batch.Commit(pebble.NoSync)
+}
+
+// GetNode retrieves a node by ID
+func (db *GraphDBPebble) GetNode(id string) (graph.Node, error) {
+	nodeKey := []byte("node:" + id)
+	data, closer, err := db.db.Get(nodeKey)
+	if err != nil {
+		return graph.Node{}, fmt.Errorf("failed to retrieve node data for %s: %v", id, err)
+	}
+	defer closer.Close()
+
+	var node graph.Node
+	err = deserialize(data, &node)
+	if err != nil {
+		return graph.Node{}, fmt.Errorf("failed to deserialize node data for %s: %v", id, err)
+	}
+
+	return node, nil
+}
+
+// GetEdge retrieves an edge by the from and to node IDs and edge type
+func (db *GraphDBPebble) GetEdge(fromID, toID, edgeType string) (graph.Edge, error) {
+	edgeKey := []byte("edge:" + fromID + ":" + toID + ":" + edgeType)
+	data, closer, err := db.db.Get(edgeKey)
+	if err != nil {
+		return graph.Edge{}, fmt.Errorf("failed to retrieve edge data for %s-%s: %v", fromID, toID, err)
+	}
+	defer closer.Close()
+
+	var edge graph.Edge
+	err = deserialize(data, &edge)
+	if err != nil {
+		return graph.Edge{}, fmt.Errorf("failed to deserialize edge data for %s-%s: %v", fromID, toID, err)
+	}
+
+	return edge, nil
 }
 
 // Traverse performs a depth-first search (DFS) on the graph starting from a node

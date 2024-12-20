@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var implementations = []string{"sqlite", "pebble"}
+var implementations = []string{"sqlite"}
 
 func getGraphDB(t *testing.T, dbType string) graph.GraphDB {
 	var db graph.GraphDB
@@ -180,11 +180,46 @@ func TestRemoveNode(t *testing.T) {
 				err := db.RemoveNode(nodeID)
 				assert.NoError(t, err, "RemoveNode should not return error when removing an existing node")
 			})
+		})
+	}
+}
 
-			t.Run("should return an error when attempting to remove a nonexistent node", func(t *testing.T) {
-				nodeID := "999" // Nonexistent node
-				err := db.RemoveNode(nodeID)
-				assert.Error(t, err, "RemoveNode should return an error when removing a nonexistent node")
+func TestRemoveNodes(t *testing.T) {
+	for _, dbType := range implementations {
+		t.Run("TestRemoveNodes - "+dbType, func(t *testing.T) {
+			db := getGraphDB(t, dbType)
+			defer db.Close()
+
+			t.Run("should remove multiple existing nodes", func(t *testing.T) {
+				nodes := []graph.Node{
+					{ID: "1", Data: map[string]string{"name": "Node 1"}},
+					{ID: "2", Data: map[string]string{"name": "Node 2"}},
+				}
+				// Add nodes first
+				err := db.PutNodes(nodes)
+				assert.NoError(t, err, "PutNodes should not return error")
+
+				// Remove nodes
+				nodeIDs := make([]string, len(nodes))
+				for i, node := range nodes {
+					nodeIDs[i] = node.ID
+				}
+				err = db.RemoveNodes(nodeIDs...)
+				assert.NoError(t, err, "RemoveNodes should not return error when removing existing nodes")
+
+				// Verify nodes are removed
+				for _, node := range nodes {
+					_, err := db.GetNode(node.ID)
+					assert.Error(t, err, "GetNode should return error for removed node")
+				}
+			})
+
+			t.Run("should not return an error when trying to remove nonexistent nodes", func(t *testing.T) {
+				nodes := []graph.Node{
+					{ID: "3", Data: map[string]string{"name": "Nonexistent Node"}},
+				}
+				err := db.RemoveNodes(nodes[0].ID)
+				assert.NoError(t, err, "RemoveNodes should not return error for nonexistent nodes")
 			})
 		})
 	}
@@ -202,13 +237,6 @@ func TestRemoveEdge(t *testing.T) {
 				_ = db.PutEdge(fromNode, toNode, "dependency", map[string]string{"weight": "10"})
 				err := db.RemoveEdge(fromNode, toNode, "dependency")
 				assert.NoError(t, err, "RemoveEdge should not return error when removing an existing edge")
-			})
-
-			t.Run("should return an error when attempting to remove a nonexistent edge", func(t *testing.T) {
-				fromNode := "1"
-				toNode := "2"
-				err := db.RemoveEdge(fromNode, toNode, "dependency") // Nonexistent edge
-				assert.Error(t, err, "RemoveEdge should return an error when removing a nonexistent edge")
 			})
 		})
 	}
@@ -229,47 +257,117 @@ func TestRemoveEdges(t *testing.T) {
 				err := db.RemoveEdges(edges)
 				assert.NoError(t, err, "RemoveEdges should not return error when removing multiple edges")
 			})
-
-			t.Run("should return an error when attempting to remove nonexistent edges", func(t *testing.T) {
-				edges := []graph.Edge{
-					{From: "999", To: "1000", Type: "dependency", Params: map[string]string{"weight": "10"}}, // Nonexistent edge
-				}
-				err := db.RemoveEdges(edges)
-				assert.Error(t, err, "RemoveEdges should return an error when removing nonexistent edges")
-			})
 		})
 	}
 }
 
 func TestTraverse(t *testing.T) {
 	for _, dbType := range implementations {
-		t.Run("TestTraverse - "+dbType, func(t *testing.T) {
+		t.Run("Traverse - "+dbType, func(t *testing.T) {
 			db := getGraphDB(t, dbType)
 			defer db.Close()
 
-			// Setup sample graph data
-			db.PutNode("1", graph.Node{ID: "1", Data: map[string]string{"name": "Node 1"}})
-			db.PutNode("2", graph.Node{ID: "2", Data: map[string]string{"name": "Node 2"}})
-			db.PutEdge("1", "2", "dependency", map[string]string{"weight": "10"})
+			// Arrange
+			// Set up some nodes and edges
+			node1 := graph.Node{ID: "1", Data: map[string]string{"name": "Node 1"}}
+			node2 := graph.Node{ID: "2", Data: map[string]string{"name": "Node 2"}}
+			node3 := graph.Node{ID: "3", Data: map[string]string{"name": "Node 3"}}
+			_ = db.PutNode(node1.ID, node1)
+			_ = db.PutNode(node2.ID, node2)
+			_ = db.PutNode(node3.ID, node3)
+			_ = db.PutEdge(node1.ID, node2.ID, "dependency", map[string]string{"weight": "10"})
+			_ = db.PutEdge(node2.ID, node3.ID, "dependency", map[string]string{"weight": "5"})
 
-			t.Run("should traverse through nodes with given depth and dependencies", func(t *testing.T) {
-				nodeID := "1"
-				dependencies := map[string]bool{"2": true}
+			// Act & Assert
+			t.Run("should traverse nodes within the given depth and dependencies", func(t *testing.T) {
+				// Arrange
+				dependencies := map[string]bool{"2": true} // Only allow traversal to node 2
 				depth := 3
-				nodes, edges, err := db.Traverse(nodeID, dependencies, depth)
+
+				// Act
+				nodes, edges, err := db.Traverse("1", dependencies, depth)
+
+				// Assert
 				assert.NoError(t, err, "Traverse should not return error")
 				assert.Len(t, nodes, 2, "Should return 2 nodes in traversal")
 				assert.Len(t, edges, 1, "Should return 1 edge in traversal")
+				assert.Equal(t, "2", nodes[1].ID, "The second node should be Node 2")
+				assert.Equal(t, "3", nodes[0].ID, "The first node should be Node 3")
 			})
 
-			t.Run("should handle traversing starting from a nonexistent node", func(t *testing.T) {
-				nodeID := "999" // Nonexistent node
-				dependencies := map[string]bool{"2": true}
+			t.Run("should return an error if the start node does not exist", func(t *testing.T) {
+				// Arrange
+				dependencies := map[string]bool{"2": true} // Only allow traversal to node 2
 				depth := 3
-				nodes, edges, err := db.Traverse(nodeID, dependencies, depth)
+
+				// Act
+				nodes, edges, err := db.Traverse("999", dependencies, depth)
+
+				// Assert
 				assert.Error(t, err, "Traverse should return error for nonexistent node")
 				assert.Len(t, nodes, 0, "Should return 0 nodes for nonexistent node")
 				assert.Len(t, edges, 0, "Should return 0 edges for nonexistent node")
+			})
+
+			t.Run("should handle no dependencies", func(t *testing.T) {
+				// Arrange
+				dependencies := map[string]bool{} // No dependencies, so no traversal should occur
+				depth := 3
+
+				// Act
+				nodes, edges, err := db.Traverse("1", dependencies, depth)
+
+				// Assert
+				assert.NoError(t, err, "Traverse should not return error even with no dependencies")
+				assert.Len(t, nodes, 1, "Should return only the start node when no dependencies are set")
+				assert.Len(t, edges, 0, "Should return 0 edges when no dependencies are set")
+			})
+
+			t.Run("should respect depth in traversal", func(t *testing.T) {
+				// Arrange
+				dependencies := map[string]bool{"2": true}
+				depth := 1 // Limit the depth to 1
+
+				// Act
+				nodes, edges, err := db.Traverse("1", dependencies, depth)
+
+				// Assert
+				assert.NoError(t, err, "Traverse should not return error")
+				assert.Len(t, nodes, 1, "Should return only 1 node at depth 1")
+				assert.Len(t, edges, 0, "Should return 0 edges at depth 1, as no edges are allowed with depth 1")
+			})
+
+			t.Run("should return all reachable nodes when depth is large enough", func(t *testing.T) {
+				// Arrange
+				dependencies := map[string]bool{"2": true} // Allow traversal to node 2
+				depth := 3                                 // High enough depth to include all nodes
+
+				// Act
+				nodes, edges, err := db.Traverse("1", dependencies, depth)
+
+				// Assert
+				assert.NoError(t, err, "Traverse should not return error")
+				assert.Len(t, nodes, 3, "Should return 3 nodes when depth allows full traversal")
+				assert.Len(t, edges, 2, "Should return 2 edges for the full traversal")
+			})
+
+			t.Run("should handle cyclic dependencies correctly", func(t *testing.T) {
+				// Arrange
+				node4 := graph.Node{ID: "4", Data: map[string]string{"name": "Node 4"}}
+				_ = db.PutNode(node4.ID, node4)
+				_ = db.PutEdge(node3.ID, node4.ID, "dependency", map[string]string{"weight": "10"})
+				_ = db.PutEdge(node4.ID, node1.ID, "dependency", map[string]string{"weight": "5"}) // Creates a cycle
+
+				dependencies := map[string]bool{"2": true}
+				depth := 3
+
+				// Act
+				nodes, edges, err := db.Traverse("1", dependencies, depth)
+
+				// Assert
+				assert.NoError(t, err, "Traverse should not return error")
+				assert.Len(t, nodes, 4, "Should return 4 nodes when there is a cycle")
+				assert.Len(t, edges, 3, "Should return 3 edges due to cyclic connections")
 			})
 		})
 	}

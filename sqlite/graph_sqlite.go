@@ -41,7 +41,7 @@ func NewGraphDBSQLite(dbPath string) (graph.GraphDB, error) {
 	return &GraphDBSQLite{db: db}, nil
 }
 
-// AddNode inserts or updates a node
+// PutNode inserts or updates a node
 func (db *GraphDBSQLite) PutNode(id string, node graph.Node) error {
 	data := fmt.Sprintf("%v", node.Data)
 
@@ -52,7 +52,7 @@ func (db *GraphDBSQLite) PutNode(id string, node graph.Node) error {
 	return err
 }
 
-// AddNodes inserts or updates multiple nodes
+// PutNodes inserts or updates multiple nodes
 func (db *GraphDBSQLite) PutNodes(nodes []graph.Node) error {
 	tx, err := db.db.Begin()
 	if err != nil {
@@ -70,7 +70,7 @@ func (db *GraphDBSQLite) PutNodes(nodes []graph.Node) error {
 	return tx.Commit()
 }
 
-// AddEdge inserts or updates an edge
+// PutEdge inserts or updates an edge
 func (db *GraphDBSQLite) PutEdge(fromID, toID, edgeType string, params map[string]string) error {
 	paramsStr := fmt.Sprintf("%v", params)
 
@@ -81,7 +81,7 @@ func (db *GraphDBSQLite) PutEdge(fromID, toID, edgeType string, params map[strin
 	return err
 }
 
-// AddEdges inserts or updates multiple edges
+// PutEdges inserts or updates multiple edges
 func (db *GraphDBSQLite) PutEdges(edges []graph.Edge) error {
 	tx, err := db.db.Begin()
 	if err != nil {
@@ -122,6 +122,43 @@ func (db *GraphDBSQLite) RemoveNode(nodeID string) error {
 	return tx.Commit()
 }
 
+// RemoveNodes removes multiple nodes and their associated edges
+func (db *GraphDBSQLite) RemoveNodes(ids ...string) error {
+	tx, err := db.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Prepare a list of node IDs to remove
+	nodeIDs := make([]interface{}, len(ids))
+	placeholders := make([]string, len(ids))
+	for i, id := range ids {
+		nodeIDs[i] = id
+		placeholders[i] = "?"
+	}
+
+	// Remove edges involving the nodes
+	edgesQuery := fmt.Sprintf(
+		"DELETE FROM edges WHERE from_id IN (%s) OR to_id IN (%s)",
+		strings.Join(placeholders, ","), strings.Join(placeholders, ","))
+	_, err = tx.Exec(edgesQuery, append(nodeIDs, nodeIDs...)...)
+	if err != nil {
+		return fmt.Errorf("failed to remove edges: %w", err)
+	}
+
+	// Remove the nodes
+	nodesQuery := fmt.Sprintf(
+		"DELETE FROM nodes WHERE id IN (%s)", strings.Join(placeholders, ","))
+	_, err = tx.Exec(nodesQuery, nodeIDs...)
+	if err != nil {
+		return fmt.Errorf("failed to remove nodes: %w", err)
+	}
+
+	// Commit the transaction
+	return tx.Commit()
+}
+
 // RemoveEdge removes a specific edge
 func (db *GraphDBSQLite) RemoveEdge(fromID, toID, edgeType string) error {
 	_, err := db.db.Exec("DELETE FROM edges WHERE from_id = ? AND to_id = ? AND type = ?", fromID, toID, edgeType)
@@ -146,81 +183,53 @@ func (db *GraphDBSQLite) RemoveEdges(edges []graph.Edge) error {
 	return tx.Commit()
 }
 
+// GetNode retrieves a node by ID
+func (db *GraphDBSQLite) GetNode(id string) (graph.Node, error) {
+	var data string
+	err := db.db.QueryRow("SELECT id, data FROM nodes WHERE id = ?", id).Scan(&id, &data)
+	if err != nil {
+		return graph.Node{}, err
+	}
+
+	return graph.Node{ID: id, Data: map[string]string{"data": data}}, nil
+}
+
+// GetEdge retrieves an edge by the from and to node IDs and the edge type
+func (db *GraphDBSQLite) GetEdge(fromID, toID, edgeType string) (graph.Edge, error) {
+	var params string
+	err := db.db.QueryRow("SELECT from_id, to_id, type, params FROM edges WHERE from_id = ? AND to_id = ? AND type = ?", fromID, toID, edgeType).Scan(&fromID, &toID, &edgeType, &params)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+
+	return graph.Edge{From: fromID, To: toID, Type: edgeType, Params: map[string]string{"params": params}}, nil
+}
+
 // Traverse traverses the graph from a starting node, respecting dependencies and depth
 func (db *GraphDBSQLite) Traverse(nodeID string, dependencies map[string]bool, depth int) ([]graph.Node, []graph.Edge, error) {
 	visited := make(map[string]bool)
 	var resultNodes []graph.Node
 	var resultEdges []graph.Edge
 
-	// Fetch all nodes up to the desired depth
 	var nodesToVisit []string
 	nodesToVisit = append(nodesToVisit, nodeID)
 
-	// A map for fast lookup of node data
 	nodeCache := make(map[string]graph.Node)
-
-	// A map for fast lookup of edges
 	edgeCache := make(map[string][]graph.Edge)
 
-	// Helper function to get node data in batch
-	getNodeData := func(ids []string) error {
-		query := "SELECT id, data FROM nodes WHERE id IN (" + strings.Join(make([]string, len(ids)), "?") + ")"
-		args := make([]interface{}, len(ids))
-		for i, id := range ids {
-			args[i] = id
-		}
-
-		rows, err := db.db.Query(query, args...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var id, data string
-			if err := rows.Scan(&id, &data); err != nil {
-				return err
-			}
-			nodeCache[id] = graph.Node{ID: id, Data: map[string]string{"data": data}}
-		}
-		return rows.Err()
-	}
-
-	// Helper function to get edge data in batch
-	getEdgesForNodes := func(ids []string) error {
-		query := "SELECT from_id, to_id, type, params FROM edges WHERE from_id IN (" + strings.Join(make([]string, len(ids)), "?") + ")"
-		args := make([]interface{}, len(ids))
-		for i, id := range ids {
-			args[i] = id
-		}
-
-		rows, err := db.db.Query(query, args...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var fromID, toID, edgeType, params string
-			if err := rows.Scan(&fromID, &toID, &edgeType, &params); err != nil {
-				return err
-			}
-			edgeCache[fromID] = append(edgeCache[fromID], graph.Edge{From: fromID, To: toID, Type: edgeType, Params: map[string]string{"params": params}})
-		}
-		return rows.Err()
-	}
-
-	// Perform the initial data fetch for the starting node and its neighbors
-	if err := getNodeData(nodesToVisit); err != nil {
+	// Fetch node data for nodesToVisit
+	err := db.getNodeData(nodesToVisit, nodeCache)
+	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch node data: %v", err)
 	}
 
-	// Get the edges for the starting node
-	if err := getEdgesForNodes(nodesToVisit); err != nil {
+	// Get the edges for nodes to visit
+	err = db.getEdgesForNodes(nodesToVisit, edgeCache)
+	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch edge data: %v", err)
 	}
 
-	// DFS-like traversal with reduced queries
+	// Depth-first traversal
 	var dfs func(id string, currentDepth int) error
 	dfs = func(id string, currentDepth int) error {
 		if currentDepth > depth || visited[id] {
@@ -257,13 +266,61 @@ func (db *GraphDBSQLite) Traverse(nodeID string, dependencies map[string]bool, d
 	}
 
 	// Start DFS traversal
-	err := dfs(nodeID, 0)
+	err = dfs(nodeID, 0)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// Return nodes and edges
 	return resultNodes, resultEdges, nil
+}
+
+// Helper to get node data in batch
+func (db *GraphDBSQLite) getNodeData(ids []string, nodeCache map[string]graph.Node) error {
+	query := "SELECT id, data FROM nodes WHERE id IN (" + strings.Join(make([]string, len(ids)), "?") + ")"
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	rows, err := db.db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return err
+		}
+		nodeCache[id] = graph.Node{ID: id, Data: map[string]string{"data": data}}
+	}
+	return rows.Err()
+}
+
+// Helper to get edge data in batch
+func (db *GraphDBSQLite) getEdgesForNodes(ids []string, edgeCache map[string][]graph.Edge) error {
+	query := "SELECT from_id, to_id, type, params FROM edges WHERE from_id IN (" + strings.Join(make([]string, len(ids)), "?") + ")"
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	rows, err := db.db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var fromID, toID, edgeType, params string
+		if err := rows.Scan(&fromID, &toID, &edgeType, &params); err != nil {
+			return err
+		}
+		edgeCache[fromID] = append(edgeCache[fromID], graph.Edge{From: fromID, To: toID, Type: edgeType, Params: map[string]string{"params": params}})
+	}
+	return rows.Err()
 }
 
 // Close closes the database connection

@@ -1,14 +1,25 @@
 package graph
 
+// GraphDB represents the interface for graph database operations.
 type GraphDB interface {
+	// Node-related methods
 	PutNode(id string, node Node) error
 	PutNodes(nodes []Node) error
-	PutEdge(fromID, toID, edgeType string, params map[string]string) error
+	RemoveNode(id string) error
+	RemoveNodes(ids ...string) error
+	GetNode(id string) (Node, error) // Added method
+
+	// Edge-related methods
+	PutEdge(from, to, edgeType string, params map[string]string) error
 	PutEdges(edges []Edge) error
-	RemoveNode(nodeID string) error
-	RemoveEdge(fromID, toID, edgeType string) error
+	RemoveEdge(from, to, edgeType string) error
 	RemoveEdges(edges []Edge) error
+	GetEdge(from, to, edgeType string) (Edge, error) // Added method
+
+	// Graph traversal
 	Traverse(nodeID string, dependencies map[string]bool, depth int) ([]Node, []Edge, error)
+
+	// General methods
 	Close() error
 }
 
