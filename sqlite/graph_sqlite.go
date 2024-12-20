@@ -205,122 +205,97 @@ func (db *GraphDBSQLite) GetEdge(fromID, toID, edgeType string) (graph.Edge, err
 	return graph.Edge{From: fromID, To: toID, Type: edgeType, Params: map[string]string{"params": params}}, nil
 }
 
-// Traverse traverses the graph from a starting node, respecting dependencies and depth
 func (db *GraphDBSQLite) Traverse(nodeID string, dependencies map[string]bool, depth int) ([]graph.Node, []graph.Edge, error) {
-	visited := make(map[string]bool)
+	// Start by creating the recursive CTE
+	// This will allow traversing nodes up to the specified depth
+	query := `
+WITH RECURSIVE traverse(id, depth, from_id, to_id, edge_type, edge_params) AS (
+    -- Anchor member: start from the initial node
+    SELECT e.from_id, 0, e.from_id, e.to_id, e.type, e.params
+    FROM edges e
+    WHERE e.from_id = ?
+
+    UNION ALL
+
+    -- Recursive member: traverse from the connected nodes
+    SELECT e.from_id, t.depth + 1, e.from_id, e.to_id, e.type, e.params
+    FROM edges e
+    JOIN traverse t ON t.to_id = e.from_id
+    WHERE t.depth < ? AND e.to_id IN (SELECT id FROM nodes WHERE id IN (?))
+)
+-- Select both the nodes and edges
+SELECT DISTINCT
+    n.id, n.data, t.from_id, t.to_id, t.edge_type, t.edge_params
+FROM traverse t
+-- Include the starting node (anchor member)
+JOIN nodes n ON n.id = t.to_id OR n.id = t.from_id
+ORDER BY t.depth, n.id;
+	`
+
+	// Prepare the query arguments
+	args := []interface{}{nodeID, depth, nodeID}
+
+	// If there are dependencies, include them in the query
+	if len(dependencies) > 0 {
+		dependencyKeys := make([]string, 0, len(dependencies))
+		for dep := range dependencies {
+			dependencyKeys = append(dependencyKeys, dep)
+		}
+		args[2] = strings.Join(dependencyKeys, ",")
+	}
+
+	// Execute the query
+	rows, err := db.db.Query(query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to execute traverse query: %v", err)
+	}
+	defer rows.Close()
+
+	// Process the results
 	var resultNodes []graph.Node
 	var resultEdges []graph.Edge
+	seenEdges := make(map[string]bool)
 
-	var nodesToVisit []string
-	nodesToVisit = append(nodesToVisit, nodeID)
-
-	nodeCache := make(map[string]graph.Node)
-	edgeCache := make(map[string][]graph.Edge)
-
-	// Fetch node data for nodesToVisit
-	err := db.getNodeData(nodesToVisit, nodeCache)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch node data: %v", err)
-	}
-
-	// Get the edges for nodes to visit
-	err = db.getEdgesForNodes(nodesToVisit, edgeCache)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch edge data: %v", err)
-	}
-
-	// Depth-first traversal
-	var dfs func(id string, currentDepth int) error
-	dfs = func(id string, currentDepth int) error {
-		if currentDepth > depth || visited[id] {
-			return nil
-		}
-		visited[id] = true
-
-		// Add the node from cache to the result
-		if node, exists := nodeCache[id]; exists {
-			resultNodes = append(resultNodes, node)
+	// Fetch the nodes and edges from the result
+	for rows.Next() {
+		var nodeID, nodeData, fromID, toID, edgeType, edgeParams string
+		if err := rows.Scan(&nodeID, &nodeData, &fromID, &toID, &edgeType, &edgeParams); err != nil {
+			return nil, nil, fmt.Errorf("failed to scan row: %v", err)
 		}
 
-		// Add edges from cache
-		if edges, exists := edgeCache[id]; exists {
-			for _, edge := range edges {
-				resultEdges = append(resultEdges, edge)
-				// Add the target node of the edge to the list of nodes to visit
-				if !visited[edge.To] {
-					nodesToVisit = append(nodesToVisit, edge.To)
-				}
+		// Add nodes to the result
+		resultNodes = append(resultNodes, graph.Node{ID: nodeID, Data: map[string]string{"data": nodeData}})
+
+		// Add edges only if they have not been seen before
+		if fromID != "" && toID != "" {
+			edgeKey := fmt.Sprintf("%s->%s", fromID, toID)
+			if !seenEdges[edgeKey] {
+				resultEdges = append(resultEdges, graph.Edge{
+					From:   fromID,
+					To:     toID,
+					Type:   edgeType,
+					Params: map[string]string{"params": edgeParams},
+				})
+				seenEdges[edgeKey] = true
 			}
 		}
-
-		// Recursively visit connected nodes
-		for _, edge := range edgeCache[id] {
-			if !visited[edge.To] {
-				err := dfs(edge.To, currentDepth+1)
-				if err != nil {
-					return err
-				}
-			}
-		}
-		return nil
 	}
 
-	// Start DFS traversal
-	err = dfs(nodeID, 0)
-	if err != nil {
-		return nil, nil, err
+	// Check for errors in the rows iteration
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("failed to iterate rows: %v", err)
 	}
 
-	// Return nodes and edges
 	return resultNodes, resultEdges, nil
 }
 
-// Helper to get node data in batch
-func (db *GraphDBSQLite) getNodeData(ids []string, nodeCache map[string]graph.Node) error {
-	query := "SELECT id, data FROM nodes WHERE id IN (" + strings.Join(make([]string, len(ids)), "?") + ")"
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		args[i] = id
+// Helper function to get dependency keys as a list of strings
+func getDependencyKeys(dependencies map[string]bool) []string {
+	var keys []string
+	for key := range dependencies {
+		keys = append(keys, key)
 	}
-
-	rows, err := db.db.Query(query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id, data string
-		if err := rows.Scan(&id, &data); err != nil {
-			return err
-		}
-		nodeCache[id] = graph.Node{ID: id, Data: map[string]string{"data": data}}
-	}
-	return rows.Err()
-}
-
-// Helper to get edge data in batch
-func (db *GraphDBSQLite) getEdgesForNodes(ids []string, edgeCache map[string][]graph.Edge) error {
-	query := "SELECT from_id, to_id, type, params FROM edges WHERE from_id IN (" + strings.Join(make([]string, len(ids)), "?") + ")"
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-
-	rows, err := db.db.Query(query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var fromID, toID, edgeType, params string
-		if err := rows.Scan(&fromID, &toID, &edgeType, &params); err != nil {
-			return err
-		}
-		edgeCache[fromID] = append(edgeCache[fromID], graph.Edge{From: fromID, To: toID, Type: edgeType, Params: map[string]string{"params": params}})
-	}
-	return rows.Err()
+	return keys
 }
 
 // Close closes the database connection

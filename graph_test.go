@@ -278,7 +278,6 @@ func TestTraverse(t *testing.T) {
 			_ = db.PutEdge(node1.ID, node2.ID, "dependency", map[string]string{"weight": "10"})
 			_ = db.PutEdge(node2.ID, node3.ID, "dependency", map[string]string{"weight": "5"})
 
-			// Act & Assert
 			t.Run("should traverse nodes within the given depth and dependencies", func(t *testing.T) {
 				// Arrange
 				dependencies := map[string]bool{"2": true} // Only allow traversal to node 2
@@ -291,8 +290,8 @@ func TestTraverse(t *testing.T) {
 				assert.NoError(t, err, "Traverse should not return error")
 				assert.Len(t, nodes, 2, "Should return 2 nodes in traversal")
 				assert.Len(t, edges, 1, "Should return 1 edge in traversal")
-				assert.Equal(t, "2", nodes[1].ID, "The second node should be Node 2")
-				assert.Equal(t, "3", nodes[0].ID, "The first node should be Node 3")
+				assert.Equal(t, "1", nodes[0].ID, "The second node should be Node 1")
+				assert.Equal(t, "2", nodes[1].ID, "The first node should be Node 2")
 			})
 
 			t.Run("should return an error if the start node does not exist", func(t *testing.T) {
