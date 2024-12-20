@@ -2,7 +2,10 @@ module github.com/fgrzl/graph
 
 go 1.23.4
 
-require github.com/mattn/go-sqlite3 v1.14.24
+require (
+	github.com/aws/aws-sdk-go v1.55.5
+	github.com/mattn/go-sqlite3 v1.14.24
+)
 
 require (
 	github.com/DataDog/zstd v1.4.5 // indirect
@@ -18,6 +21,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.16.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
