@@ -221,7 +221,7 @@ WITH RECURSIVE traverse(id, depth, from_id, to_id, edge_type, edge_params) AS (
     SELECT e.from_id, t.depth + 1, e.from_id, e.to_id, e.type, e.params
     FROM edges e
     JOIN traverse t ON t.to_id = e.from_id
-    WHERE t.depth < ? AND e.to_id IN (SELECT id FROM nodes WHERE id IN (?))
+    WHERE t.depth < ? AND e.to_id 
 )
 -- Select both the nodes and edges
 SELECT DISTINCT
@@ -233,16 +233,16 @@ ORDER BY t.depth, n.id;
 	`
 
 	// Prepare the query arguments
-	args := []interface{}{nodeID, depth, nodeID}
+	args := []interface{}{nodeID, depth}
 
 	// If there are dependencies, include them in the query
-	if len(dependencies) > 0 {
-		dependencyKeys := make([]string, 0, len(dependencies))
-		for dep := range dependencies {
-			dependencyKeys = append(dependencyKeys, dep)
-		}
-		args[2] = strings.Join(dependencyKeys, ",")
-	}
+	// if len(dependencies) > 0 {
+	// 	dependencyKeys := make([]string, 0, len(dependencies))
+	// 	for dep := range dependencies {
+	// 		dependencyKeys = append(dependencyKeys, dep)
+	// 	}
+	// 	args[2] = strings.Join(dependencyKeys, ",")
+	// }
 
 	// Execute the query
 	rows, err := db.db.Query(query, args...)
