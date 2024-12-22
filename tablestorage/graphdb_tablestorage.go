@@ -1,10 +1,10 @@
-package azure
+package tablestorage
 
 import (
 	"context"
 	"fmt"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/aztable"
+	"github.com/Azure/azure-sdk-for-go/sdk/data/aztable"
 	"github.com/fgrzl/graph"
 )
 
