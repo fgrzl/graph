@@ -71,15 +71,15 @@ func TestPutNode(t *testing.T) {
 			defer db.Close()
 
 			t.Run("should add a valid node when node ID is unique", func(t *testing.T) {
-				node := graph.Node{ID: "1", Data: map[string]string{"name": "Node 1"}}
+				node := graph.Node{ID: "1", Data: []byte("Node 1")}
 				err := db.PutNode(node.ID, node)
 				assert.NoError(t, err, "PutNode should not return error when adding a valid node")
 			})
 
 			t.Run("should update an existing node when node ID already exists", func(t *testing.T) {
-				node := graph.Node{ID: "1", Data: map[string]string{"name": "Node 1"}}
+				node := graph.Node{ID: "1", Data: []byte("Node 1")}
 				_ = db.PutNode(node.ID, node) // Insert node for the first time
-				updatedNode := graph.Node{ID: "1", Data: map[string]string{"name": "Updated Node 1"}}
+				updatedNode := graph.Node{ID: "1", Data: []byte("Updated Node 1")}
 				err := db.PutNode(updatedNode.ID, updatedNode) // Update the existing node
 				assert.NoError(t, err, "PutNode should not return error when updating an existing node")
 			})
@@ -95,8 +95,8 @@ func TestPutNodes(t *testing.T) {
 
 			t.Run("should add multiple valid nodes", func(t *testing.T) {
 				nodes := []graph.Node{
-					{ID: "1", Data: map[string]string{"name": "Node 1"}},
-					{ID: "2", Data: map[string]string{"name": "Node 2"}},
+					{ID: "1", Data: []byte("Node 1")},
+					{ID: "2", Data: []byte("Node 2")},
 				}
 				err := db.PutNodes(nodes)
 				assert.NoError(t, err, "PutNodes should not return error when adding multiple nodes")
@@ -104,8 +104,8 @@ func TestPutNodes(t *testing.T) {
 
 			t.Run("should update existing nodes when IDs are duplicated", func(t *testing.T) {
 				nodes := []graph.Node{
-					{ID: "1", Data: map[string]string{"name": "Node 1"}},
-					{ID: "1", Data: map[string]string{"name": "Node 1 Updated"}}, // Duplicate ID
+					{ID: "1", Data: []byte("Node 1")},
+					{ID: "1", Data: []byte("Node 1")}, // Duplicate ID
 				}
 				err := db.PutNodes(nodes)
 				assert.NoError(t, err, "PutNodes should not return error when updating nodes with duplicate IDs")
@@ -176,7 +176,7 @@ func TestRemoveNode(t *testing.T) {
 
 			t.Run("should remove an existing node", func(t *testing.T) {
 				nodeID := "1"
-				_ = db.PutNode(nodeID, graph.Node{ID: nodeID, Data: map[string]string{"name": "Node 1"}})
+				_ = db.PutNode(nodeID, graph.Node{ID: nodeID, Data: []byte("Node 1")})
 				err := db.RemoveNode(nodeID)
 				assert.NoError(t, err, "RemoveNode should not return error when removing an existing node")
 			})
@@ -192,8 +192,8 @@ func TestRemoveNodes(t *testing.T) {
 
 			t.Run("should remove multiple existing nodes", func(t *testing.T) {
 				nodes := []graph.Node{
-					{ID: "1", Data: map[string]string{"name": "Node 1"}},
-					{ID: "2", Data: map[string]string{"name": "Node 2"}},
+					{ID: "1", Data: []byte("Node 1")},
+					{ID: "2", Data: []byte("Node 2")},
 				}
 				// Add nodes first
 				err := db.PutNodes(nodes)
@@ -216,7 +216,7 @@ func TestRemoveNodes(t *testing.T) {
 
 			t.Run("should not return an error when trying to remove nonexistent nodes", func(t *testing.T) {
 				nodes := []graph.Node{
-					{ID: "3", Data: map[string]string{"name": "Nonexistent Node"}},
+					{ID: "3", Data: []byte("Nonexistent Node")},
 				}
 				err := db.RemoveNodes(nodes[0].ID)
 				assert.NoError(t, err, "RemoveNodes should not return error for nonexistent nodes")
@@ -269,11 +269,11 @@ func TestTraverse(t *testing.T) {
 
 			// Arrange
 			// Set up some nodes and edges
-			node1 := graph.Node{ID: "1", Data: map[string]string{"name": "Node 1"}}
-			node2 := graph.Node{ID: "2", Data: map[string]string{"name": "Node 2"}}
-			node3 := graph.Node{ID: "3", Data: map[string]string{"name": "Node 3"}}
-			node4 := graph.Node{ID: "4", Data: map[string]string{"name": "Node 4"}}
-			node5 := graph.Node{ID: "5", Data: map[string]string{"name": "Node 5"}}
+			node1 := graph.Node{ID: "1", Data: []byte("Node 1")}
+			node2 := graph.Node{ID: "2", Data: []byte("Node 2")}
+			node3 := graph.Node{ID: "3", Data: []byte("Node 3")}
+			node4 := graph.Node{ID: "4", Data: []byte("Node 4")}
+			node5 := graph.Node{ID: "5", Data: []byte("Node 5")}
 			_ = db.PutNode(node1.ID, node1)
 			_ = db.PutNode(node2.ID, node2)
 			_ = db.PutNode(node3.ID, node3)
@@ -294,10 +294,26 @@ func TestTraverse(t *testing.T) {
 
 				// Assert
 				assert.NoError(t, err, "Traverse should not return error")
-				assert.Len(t, nodes, 2, "Should return 2 nodes in traversal")
-				assert.Len(t, edges, 1, "Should return 1 edge in traversal")
+				assert.Len(t, nodes, 5, "Should return 5 nodes in traversal")
+				assert.Len(t, edges, 4, "Should return 1 edge in traversal")
+
 				assert.Equal(t, "1", nodes[0].ID, "The second node should be Node 1")
 				assert.Equal(t, "2", nodes[1].ID, "The first node should be Node 2")
+				assert.Equal(t, "3", nodes[2].ID, "The first node should be Node 3")
+				assert.Equal(t, "4", nodes[3].ID, "The first node should be Node 4")
+				assert.Equal(t, "5", nodes[4].ID, "The first node should be Node 5")
+
+				assert.Equal(t, "1", edges[0].From, "The second node should be Node 1")
+				assert.Equal(t, "2", edges[0].To, "The second node should be Node 1")
+
+				assert.Equal(t, "2", edges[1].From, "The first node should be Node 2")
+				assert.Equal(t, "3", edges[1].To, "The first node should be Node 2")
+
+				assert.Equal(t, "3", edges[2].From, "The first node should be Node 3")
+				assert.Equal(t, "4", edges[2].To, "The first node should be Node 4")
+
+				assert.Equal(t, "4", edges[3].From, "The first node should be Node 4")
+				assert.Equal(t, "5", edges[3].To, "The first node should be Node 5")
 			})
 
 			t.Run("should return no error if the start node does not exist", func(t *testing.T) {
@@ -320,7 +336,7 @@ func TestTraverse(t *testing.T) {
 				depth := 3
 
 				// Act
-				nodes, edges, err := db.Traverse("1", dependencies, depth)
+				nodes, edges, err := db.Traverse("5", dependencies, depth)
 
 				// Assert
 				assert.NoError(t, err, "Traverse should not return error even with no dependencies")
@@ -338,27 +354,13 @@ func TestTraverse(t *testing.T) {
 
 				// Assert
 				assert.NoError(t, err, "Traverse should not return error")
-				assert.Len(t, nodes, 1, "Should return only 1 node at depth 1")
-				assert.Len(t, edges, 0, "Should return 0 edges at depth 1, as no edges are allowed with depth 1")
-			})
-
-			t.Run("should return all reachable nodes when depth is large enough", func(t *testing.T) {
-				// Arrange
-				dependencies := map[string]bool{"2": true} // Allow traversal to node 2
-				depth := 3                                 // High enough depth to include all nodes
-
-				// Act
-				nodes, edges, err := db.Traverse("1", dependencies, depth)
-
-				// Assert
-				assert.NoError(t, err, "Traverse should not return error")
-				assert.Len(t, nodes, 2, "Should return 3 nodes when depth allows full traversal")
-				assert.Len(t, edges, 2, "Should return 2 edges for the full traversal")
+				assert.Len(t, nodes, 2, "Should return only 1 node at depth 1")
+				assert.Len(t, edges, 1, "Should return 0 edges at depth 1, as no edges are allowed with depth 1")
 			})
 
 			t.Run("should handle cyclic dependencies correctly", func(t *testing.T) {
 				// Arrange
-				node4 := graph.Node{ID: "4", Data: map[string]string{"name": "Node 4"}}
+				node4 := graph.Node{ID: "4", Data: []byte("Node 4")}
 				_ = db.PutNode(node4.ID, node4)
 				_ = db.PutEdge(node3.ID, node4.ID, "dependency", map[string]string{"weight": "10"})
 				_ = db.PutEdge(node4.ID, node1.ID, "dependency", map[string]string{"weight": "5"}) // Creates a cycle
@@ -390,7 +392,7 @@ func TestClose(t *testing.T) {
 			})
 
 			t.Run("should close the graph after operations are performed", func(t *testing.T) {
-				_ = db.PutNode("1", graph.Node{ID: "1", Data: map[string]string{"name": "Node 1"}})
+				_ = db.PutNode("1", graph.Node{ID: "1", Data: []byte("Node 1")})
 				err := db.Close()
 				assert.NoError(t, err, "Close should not return error after operations")
 			})

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fgrzl/graph"
@@ -23,7 +24,7 @@ func NewGraphDBSQLite(dbPath string) (graph.GraphDB, error) {
 	_, err = db.Exec(`
 	CREATE TABLE IF NOT EXISTS nodes (
 		id TEXT PRIMARY KEY,
-		data TEXT
+		data BYTES
 	);
 
 	CREATE TABLE IF NOT EXISTS edges (
@@ -43,12 +44,11 @@ func NewGraphDBSQLite(dbPath string) (graph.GraphDB, error) {
 
 // PutNode inserts or updates a node
 func (db *GraphDBSQLite) PutNode(id string, node graph.Node) error {
-	data := fmt.Sprintf("%v", node.Data)
 
 	_, err := db.db.Exec(`
 		INSERT OR REPLACE INTO nodes (id, data)
 		VALUES (?, ?);
-	`, id, data)
+	`, id, node.Data)
 	return err
 }
 
@@ -185,13 +185,13 @@ func (db *GraphDBSQLite) RemoveEdges(edges []graph.Edge) error {
 
 // GetNode retrieves a node by ID
 func (db *GraphDBSQLite) GetNode(id string) (graph.Node, error) {
-	var data string
+	var data []byte
 	err := db.db.QueryRow("SELECT id, data FROM nodes WHERE id = ?", id).Scan(&id, &data)
 	if err != nil {
 		return graph.Node{}, err
 	}
 
-	return graph.Node{ID: id, Data: map[string]string{"data": data}}, nil
+	return graph.Node{ID: id, Data: data}, nil
 }
 
 // GetEdge retrieves an edge by the from and to node IDs and the edge type
@@ -208,85 +208,131 @@ func (db *GraphDBSQLite) GetEdge(fromID, toID, edgeType string) (graph.Edge, err
 func (db *GraphDBSQLite) Traverse(nodeID string, dependencies map[string]bool, depth int) ([]graph.Node, []graph.Edge, error) {
 	// Start by creating the recursive CTE
 	// This will allow traversing nodes up to the specified depth
-	query := `
-WITH RECURSIVE traverse(id, depth, from_id, to_id, edge_type, edge_params) AS (
-    -- Anchor member: start from the initial node
-    SELECT e.from_id, 0, e.from_id, e.to_id, e.type, e.params
+
+	queryEdges := `
+-- Insert the results of the recursive query into the temporary table
+WITH RECURSIVE _e AS (
+    -- Base case: start with the initial node
+    SELECT 
+        e.from_id, 
+        e.to_id, 
+        e.type, 
+        e.params,
+        '/' || e.from_id || '/' AS path, -- Initialize the path
+        1 AS depth
     FROM edges e
     WHERE e.from_id = ?
 
     UNION ALL
 
-    -- Recursive member: traverse from the connected nodes
-    SELECT e.from_id, t.depth + 1, e.from_id, e.to_id, e.type, e.params
+    -- Recursive case: expand paths deeper, avoiding cycles
+    SELECT 
+        e.from_id, 
+        e.to_id, 
+        e.type, 
+        e.params,
+        _e.path || e.to_id || '/', -- Extend the path
+        _e.depth + 1 AS depth
     FROM edges e
-    JOIN traverse t ON t.to_id = e.from_id
-    WHERE t.depth < ? AND e.to_id 
+    INNER JOIN _e ON e.from_id = _e.to_id
+    WHERE _e.depth < ? -- Depth limit
+      AND instr(_e.path, '/' || e.to_id || '/') = 0 -- Avoid revisiting nodes in the path
 )
--- Select both the nodes and edges
-SELECT DISTINCT
-    n.id, n.data, t.from_id, t.to_id, t.edge_type, t.edge_params
-FROM traverse t
--- Include the starting node (anchor member)
-JOIN nodes n ON n.id = t.to_id OR n.id = t.from_id
-ORDER BY t.depth, n.id;
-	`
+SELECT 
+    _e.from_id, 
+    _e.to_id, 
+    _e.type, 
+    _e.params
+FROM _e;
+`
 
 	// Prepare the query arguments
 	args := []interface{}{nodeID, depth}
 
-	// If there are dependencies, include them in the query
-	// if len(dependencies) > 0 {
-	// 	dependencyKeys := make([]string, 0, len(dependencies))
-	// 	for dep := range dependencies {
-	// 		dependencyKeys = append(dependencyKeys, dep)
-	// 	}
-	// 	args[2] = strings.Join(dependencyKeys, ",")
-	// }
-
 	// Execute the query
-	rows, err := db.db.Query(query, args...)
+	nodeIDs := make(map[string]struct{})
+	nodeIDs[nodeID] = struct{}{}
+
+	var resultEdges []graph.Edge
+	rows, err := db.db.Query(queryEdges, args...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to execute traverse query: %v", err)
+		return nil, nil, fmt.Errorf("failed to query edges: %v", err)
 	}
 	defer rows.Close()
 
-	// Process the results
-	var resultNodes []graph.Node
-	var resultEdges []graph.Edge
-	seenEdges := make(map[string]bool)
-
-	// Fetch the nodes and edges from the result
 	for rows.Next() {
-		var nodeID, nodeData, fromID, toID, edgeType, edgeParams string
-		if err := rows.Scan(&nodeID, &nodeData, &fromID, &toID, &edgeType, &edgeParams); err != nil {
-			return nil, nil, fmt.Errorf("failed to scan row: %v", err)
+		var fromID, toID, edgeType, edgeParams string
+		if err := rows.Scan(&fromID, &toID, &edgeType, &edgeParams); err != nil {
+			return nil, nil, fmt.Errorf("failed to scan edge %v", err)
 		}
-
-		// Add nodes to the result
-		resultNodes = append(resultNodes, graph.Node{ID: nodeID, Data: map[string]string{"data": nodeData}})
-
-		// Add edges only if they have not been seen before
-		if fromID != "" && toID != "" {
-			edgeKey := fmt.Sprintf("%s->%s", fromID, toID)
-			if !seenEdges[edgeKey] {
-				resultEdges = append(resultEdges, graph.Edge{
-					From:   fromID,
-					To:     toID,
-					Type:   edgeType,
-					Params: map[string]string{"params": edgeParams},
-				})
-				seenEdges[edgeKey] = true
-			}
-		}
+		resultEdges = append(resultEdges, graph.Edge{
+			From:   fromID,
+			To:     toID,
+			Type:   edgeType,
+			Params: map[string]string{"params": edgeParams},
+		})
+		nodeIDs[fromID] = struct{}{}
+		nodeIDs[toID] = struct{}{}
 	}
 
 	// Check for errors in the rows iteration
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("failed to iterate rows: %v", err)
+		return nil, nil, fmt.Errorf("failed to iterate edges: %v", err)
+	}
+
+	resultNodes, err := db.queryNodesInBatches(nodeIDs)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return resultNodes, resultEdges, nil
+}
+
+func (db *GraphDBSQLite) queryNodesInBatches(nodeIDs map[string]struct{}) ([]graph.Node, error) {
+	var resultNodes []graph.Node
+	keys := make([]string, 0, len(nodeIDs))
+	for key := range nodeIDs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	// Function to chunk keys into batches of 999
+	chunkSize := 999
+	for i := 0; i < len(keys); i += chunkSize {
+		// Get the chunk of keys
+		end := i + chunkSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		chunk := keys[i:end]
+
+		// Build the query with the chunk of keys
+		placeholder := strings.Join(chunk, "\", \"")
+		queryNodes := `SELECT n.id, n.data FROM nodes n WHERE n.id IN ("` + placeholder + `") ORDER BY n.id`
+
+		// Execute the query
+		rows, err := db.db.Query(queryNodes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query nodes: %v", err)
+		}
+		defer rows.Close()
+
+		// Process the results
+		for rows.Next() {
+			var node graph.Node
+			if err := rows.Scan(&node.ID, &node.Data); err != nil {
+				return nil, fmt.Errorf("failed to scan row: %v", err)
+			}
+			resultNodes = append(resultNodes, node)
+		}
+
+		// Check for errors after iterating over rows
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("row iteration error: %v", err)
+		}
+	}
+
+	return resultNodes, nil
 }
 
 // Helper function to get dependency keys as a list of strings

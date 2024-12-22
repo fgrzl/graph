@@ -25,8 +25,8 @@ type GraphDB interface {
 
 // Node structure
 type Node struct {
-	ID   string            `json:"id"`
-	Data map[string]string `json:"data"`
+	ID   string `json:"id"`
+	Data []byte `json:"data"`
 }
 
 // Edge structure
