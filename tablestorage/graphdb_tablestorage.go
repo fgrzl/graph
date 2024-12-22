@@ -4,17 +4,17 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/data/aztable"
+	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/fgrzl/graph"
 )
 
 type azureTableGraph struct {
-	tableClient *aztable.Client
+	tableClient *aztables.Client
 	ctx         context.Context
 }
 
 func NewAzureTableGraph(connectionString string, tableName string) (graph.GraphDB, error) {
-	client, err := aztable.NewClientFromConnectionString(connectionString, nil)
+	client, err := aztables.NewClientFromConnectionString(connectionString, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Azure Table client: %v", err)
 	}
@@ -24,36 +24,46 @@ func NewAzureTableGraph(connectionString string, tableName string) (graph.GraphD
 	}, nil
 }
 
+// Helper function to get the key for nodes
+func getNodeKey(id string) string {
+	return fmt.Sprintf("node:%s", id) // PartitionKey is "node:{nodeID}"
+}
+
+// Helper function to get the key for edges
+func getEdgeKey(toID string) string {
+	return toID // RowKey is just the toID
+}
+
 func (db *azureTableGraph) PutNode(id string, node graph.Node) error {
-	entity := aztable.Entity{
-		PartitionKey: "node",
-		RowKey:       id,
+	entity := aztables.Entity{
+		PartitionKey: getNodeKey(id), // PartitionKey is "node:{nodeID}"
+		RowKey:       "",             // RowKey is empty for nodes
 		Properties: map[string]any{
 			"Data": node.Data,
 		},
 	}
-	_, err := db.tableClient.UpsertEntity(db.ctx, &entity, aztable.UpsertOptions{})
+	_, err := db.tableClient.UpsertEntity(db.ctx, &entity, aztables.UpsertOptions{})
 	return err
 }
 
 func (db *azureTableGraph) PutNodes(nodes []graph.Node) error {
 	batch := db.tableClient.NewBatch()
 	for _, node := range nodes {
-		entity := aztable.Entity{
-			PartitionKey: "node",
-			RowKey:       node.ID,
+		entity := aztables.Entity{
+			PartitionKey: getNodeKey(node.ID), // PartitionKey is "node:{nodeID}"
+			RowKey:       "",                  // RowKey is empty for nodes
 			Properties: map[string]any{
 				"Data": node.Data,
 			},
 		}
-		batch.UpsertEntity(&entity, aztable.EntityUpsertOptions{})
+		batch.AddUpsertEntity(&entity, aztables.UpsertOptions{})
 	}
 	_, err := batch.Submit(db.ctx)
 	return err
 }
 
 func (db *azureTableGraph) GetNode(id string) (graph.Node, error) {
-	entity, err := db.tableClient.GetEntity(db.ctx, "node", id, nil)
+	entity, err := db.tableClient.GetEntity(db.ctx, getNodeKey(id), "", nil) // RowKey is empty for nodes
 	if err != nil {
 		return graph.Node{}, fmt.Errorf("failed to retrieve node %s: %v", id, err)
 	}
@@ -64,7 +74,7 @@ func (db *azureTableGraph) GetNode(id string) (graph.Node, error) {
 }
 
 func (db *azureTableGraph) RemoveNode(id string) error {
-	_, err := db.tableClient.DeleteEntity(db.ctx, "node", id, nil)
+	_, err := db.tableClient.DeleteEntity(db.ctx, getNodeKey(id), "", nil) // RowKey is empty for nodes
 	if err != nil {
 		return fmt.Errorf("failed to remove node %s: %v", id, err)
 	}
@@ -93,10 +103,9 @@ func (db *azureTableGraph) RemoveNodes(ids ...string) error {
 }
 
 func (db *azureTableGraph) PutEdge(fromID, toID, edgeType string, params map[string]string) error {
-	edgeKey := getEdgeKey(fromID, toID, edgeType)
-	entity := aztable.Entity{
-		PartitionKey: "edge",
-		RowKey:       edgeKey,
+	entity := aztables.Entity{
+		PartitionKey: fmt.Sprintf("edge:%s", fromID), // PartitionKey is "edge:{fromID}"
+		RowKey:       getEdgeKey(toID),               // RowKey is "toID"
 		Properties: map[string]any{
 			"From":   fromID,
 			"To":     toID,
@@ -104,17 +113,16 @@ func (db *azureTableGraph) PutEdge(fromID, toID, edgeType string, params map[str
 			"Params": params,
 		},
 	}
-	_, err := db.tableClient.UpsertEntity(db.ctx, &entity, aztable.UpsertOptions{})
+	_, err := db.tableClient.UpsertEntity(db.ctx, &entity, aztables.UpsertOptions{})
 	return err
 }
 
 func (db *azureTableGraph) PutEdges(edges []graph.Edge) error {
 	batch := db.tableClient.NewBatch()
 	for _, edge := range edges {
-		edgeKey := getEdgeKey(edge.From, edge.To, edge.Type)
-		entity := aztable.Entity{
-			PartitionKey: "edge",
-			RowKey:       edgeKey,
+		entity := aztables.Entity{
+			PartitionKey: fmt.Sprintf("edge:%s", edge.From), // PartitionKey is "edge:{fromID}"
+			RowKey:       getEdgeKey(edge.To),               // RowKey is "toID"
 			Properties: map[string]any{
 				"From":   edge.From,
 				"To":     edge.To,
@@ -122,15 +130,14 @@ func (db *azureTableGraph) PutEdges(edges []graph.Edge) error {
 				"Params": edge.Params,
 			},
 		}
-		batch.UpsertEntity(&entity, aztable.EntityUpsertOptions{})
+		batch.AddUpsertEntity(&entity, aztables.UpsertOptions{})
 	}
 	_, err := batch.Submit(db.ctx)
 	return err
 }
 
 func (db *azureTableGraph) GetEdge(fromID, toID, edgeType string) (graph.Edge, error) {
-	edgeKey := getEdgeKey(fromID, toID, edgeType)
-	entity, err := db.tableClient.GetEntity(db.ctx, "edge", edgeKey, nil)
+	entity, err := db.tableClient.GetEntity(db.ctx, fmt.Sprintf("edge:%s", fromID), getEdgeKey(toID), nil)
 	if err != nil {
 		return graph.Edge{}, fmt.Errorf("failed to retrieve edge %s-%s: %v", fromID, toID, err)
 	}
@@ -143,14 +150,13 @@ func (db *azureTableGraph) GetEdge(fromID, toID, edgeType string) (graph.Edge, e
 }
 
 func (db *azureTableGraph) RemoveEdge(fromID, toID, edgeType string) error {
-	edgeKey := getEdgeKey(fromID, toID, edgeType)
-	_, err := db.tableClient.DeleteEntity(db.ctx, "edge", edgeKey, nil)
+	// Delete the edge from <fromID> to <toID>
+	_, err := db.tableClient.DeleteEntity(db.ctx, fmt.Sprintf("edge:%s", fromID), getEdgeKey(toID), nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete edge %s-%s: %v", fromID, toID, err)
 	}
-	// Also delete reverse edge
-	reverseEdgeKey := getEdgeKey(toID, fromID, edgeType)
-	_, err = db.tableClient.DeleteEntity(db.ctx, "edge", reverseEdgeKey, nil)
+	// Also delete the reverse edge (from "toID" to "fromID")
+	_, err = db.tableClient.DeleteEntity(db.ctx, fmt.Sprintf("edge:%s", toID), getEdgeKey(fromID), nil)
 	return err
 }
 
@@ -232,8 +238,8 @@ func (db *azureTableGraph) Close() error {
 func (db *azureTableGraph) GetEdgesRelatedToNode(nodeID string) ([]graph.Edge, error) {
 	var edges []graph.Edge
 	prefix := fmt.Sprintf("edge:%s:", nodeID)
-	resp, err := db.tableClient.ListEntities(db.ctx, &aztable.ListEntitiesOptions{
-		Filter: fmt.Sprintf("PartitionKey eq 'edge' and RowKey ge '%s' and RowKey lt '%s~'", prefix, prefix+"~"),
+	resp, err := db.tableClient.ListEntities(db.ctx, &aztables.ListEntitiesOptions{
+		Filter: fmt.Sprintf("PartitionKey eq 'edge:%s' and RowKey ge '%s' and RowKey lt '%s~'", nodeID, prefix, prefix+"~"),
 	})
 	if err != nil {
 		return nil, err
@@ -250,8 +256,4 @@ func (db *azureTableGraph) GetEdgesRelatedToNode(nodeID string) ([]graph.Edge, e
 		})
 	}
 	return edges, nil
-}
-
-func getEdgeKey(fromID, toID, edgeType string) string {
-	return fmt.Sprintf("%s:%s:%s", fromID, toID, edgeType)
 }
