@@ -10,7 +10,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-type GraphDBSQLite struct {
+type sqliteGraph struct {
 	db *sql.DB
 }
 
@@ -39,11 +39,11 @@ func NewGraphDBSQLite(dbPath string) (graph.GraphDB, error) {
 		return nil, fmt.Errorf("could not create tables: %v", err)
 	}
 
-	return &GraphDBSQLite{db: db}, nil
+	return &sqliteGraph{db: db}, nil
 }
 
 // PutNode inserts or updates a node
-func (db *GraphDBSQLite) PutNode(id string, node graph.Node) error {
+func (db *sqliteGraph) PutNode(id string, node graph.Node) error {
 
 	_, err := db.db.Exec(`
 		INSERT OR REPLACE INTO nodes (id, data)
@@ -53,7 +53,7 @@ func (db *GraphDBSQLite) PutNode(id string, node graph.Node) error {
 }
 
 // PutNodes inserts or updates multiple nodes
-func (db *GraphDBSQLite) PutNodes(nodes []graph.Node) error {
+func (db *sqliteGraph) PutNodes(nodes []graph.Node) error {
 	tx, err := db.db.Begin()
 	if err != nil {
 		return err
@@ -71,7 +71,7 @@ func (db *GraphDBSQLite) PutNodes(nodes []graph.Node) error {
 }
 
 // PutEdge inserts or updates an edge
-func (db *GraphDBSQLite) PutEdge(fromID, toID, edgeType string, params map[string]string) error {
+func (db *sqliteGraph) PutEdge(fromID, toID, edgeType string, params map[string]string) error {
 	paramsStr := fmt.Sprintf("%v", params)
 
 	_, err := db.db.Exec(`
@@ -82,7 +82,7 @@ func (db *GraphDBSQLite) PutEdge(fromID, toID, edgeType string, params map[strin
 }
 
 // PutEdges inserts or updates multiple edges
-func (db *GraphDBSQLite) PutEdges(edges []graph.Edge) error {
+func (db *sqliteGraph) PutEdges(edges []graph.Edge) error {
 	tx, err := db.db.Begin()
 	if err != nil {
 		return err
@@ -100,7 +100,7 @@ func (db *GraphDBSQLite) PutEdges(edges []graph.Edge) error {
 }
 
 // RemoveNode removes a node and its associated edges
-func (db *GraphDBSQLite) RemoveNode(nodeID string) error {
+func (db *sqliteGraph) RemoveNode(nodeID string) error {
 	tx, err := db.db.Begin()
 	if err != nil {
 		return err
@@ -123,7 +123,7 @@ func (db *GraphDBSQLite) RemoveNode(nodeID string) error {
 }
 
 // RemoveNodes removes multiple nodes and their associated edges
-func (db *GraphDBSQLite) RemoveNodes(ids ...string) error {
+func (db *sqliteGraph) RemoveNodes(ids ...string) error {
 	tx, err := db.db.Begin()
 	if err != nil {
 		return err
@@ -160,13 +160,13 @@ func (db *GraphDBSQLite) RemoveNodes(ids ...string) error {
 }
 
 // RemoveEdge removes a specific edge
-func (db *GraphDBSQLite) RemoveEdge(fromID, toID, edgeType string) error {
+func (db *sqliteGraph) RemoveEdge(fromID, toID, edgeType string) error {
 	_, err := db.db.Exec("DELETE FROM edges WHERE from_id = ? AND to_id = ? AND type = ?", fromID, toID, edgeType)
 	return err
 }
 
 // RemoveEdges removes multiple edges
-func (db *GraphDBSQLite) RemoveEdges(edges []graph.Edge) error {
+func (db *sqliteGraph) RemoveEdges(edges []graph.Edge) error {
 	tx, err := db.db.Begin()
 	if err != nil {
 		return err
@@ -184,7 +184,7 @@ func (db *GraphDBSQLite) RemoveEdges(edges []graph.Edge) error {
 }
 
 // GetNode retrieves a node by ID
-func (db *GraphDBSQLite) GetNode(id string) (graph.Node, error) {
+func (db *sqliteGraph) GetNode(id string) (graph.Node, error) {
 	var data []byte
 	err := db.db.QueryRow("SELECT id, data FROM nodes WHERE id = ?", id).Scan(&id, &data)
 	if err != nil {
@@ -195,7 +195,7 @@ func (db *GraphDBSQLite) GetNode(id string) (graph.Node, error) {
 }
 
 // GetEdge retrieves an edge by the from and to node IDs and the edge type
-func (db *GraphDBSQLite) GetEdge(fromID, toID, edgeType string) (graph.Edge, error) {
+func (db *sqliteGraph) GetEdge(fromID, toID, edgeType string) (graph.Edge, error) {
 	var params string
 	err := db.db.QueryRow("SELECT from_id, to_id, type, params FROM edges WHERE from_id = ? AND to_id = ? AND type = ?", fromID, toID, edgeType).Scan(&fromID, &toID, &edgeType, &params)
 	if err != nil {
@@ -205,7 +205,7 @@ func (db *GraphDBSQLite) GetEdge(fromID, toID, edgeType string) (graph.Edge, err
 	return graph.Edge{From: fromID, To: toID, Type: edgeType, Params: map[string]string{"params": params}}, nil
 }
 
-func (db *GraphDBSQLite) Traverse(nodeID string, dependencies map[string]bool, depth int) ([]graph.Node, []graph.Edge, error) {
+func (db *sqliteGraph) Traverse(nodeID string, dependencies map[string]bool, depth int) ([]graph.Node, []graph.Edge, error) {
 	// Start by creating the recursive CTE
 	// This will allow traversing nodes up to the specified depth
 
@@ -288,7 +288,7 @@ FROM _e;
 	return resultNodes, resultEdges, nil
 }
 
-func (db *GraphDBSQLite) queryNodesInBatches(nodeIDs map[string]struct{}) ([]graph.Node, error) {
+func (db *sqliteGraph) queryNodesInBatches(nodeIDs map[string]struct{}) ([]graph.Node, error) {
 	var resultNodes []graph.Node
 	keys := make([]string, 0, len(nodeIDs))
 	for key := range nodeIDs {
@@ -345,6 +345,6 @@ func getDependencyKeys(dependencies map[string]bool) []string {
 }
 
 // Close closes the database connection
-func (db *GraphDBSQLite) Close() error {
+func (db *sqliteGraph) Close() error {
 	return db.db.Close()
 }

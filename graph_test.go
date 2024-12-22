@@ -1,6 +1,7 @@
 package graph_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/fgrzl/graph"
 	"github.com/fgrzl/graph/pebble"
 	"github.com/fgrzl/graph/sqlite"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -25,7 +27,7 @@ func getGraphDB(t *testing.T, dbType string) graph.GraphDB {
 	switch dbType {
 	case "sqlite":
 		// Use a temporary file for SQLite DB
-		dbPath = filepath.Join(tempDir, "test.db")
+		dbPath = filepath.Join(tempDir, fmt.Sprintf("db_%v.sqlite", uuid.NewString()))
 		// Initialize SQLite implementation
 		db, err = sqlite.NewGraphDBSQLite(dbPath)
 		if err != nil {
@@ -33,7 +35,7 @@ func getGraphDB(t *testing.T, dbType string) graph.GraphDB {
 		}
 	case "pebble":
 		// Use a temporary directory for Pebble DB
-		dbPath = filepath.Join(tempDir, "test.pebble")
+		dbPath = filepath.Join(tempDir, fmt.Sprintf("db_%v.pebble", uuid.NewString()))
 		// Initialize Pebble implementation
 		db, err = pebble.NewGraphDBPebble(dbPath)
 		if err != nil {
