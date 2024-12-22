@@ -14,7 +14,7 @@ type sqliteGraph struct {
 	db *sql.DB
 }
 
-func NewGraphDBSQLite(dbPath string) (graph.GraphDB, error) {
+func NewSqliteGraph(dbPath string) (graph.GraphDB, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not open SQLite database: %v", err)

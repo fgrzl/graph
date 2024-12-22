@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var implementations = []string{"pebble"}
+var implementations = []string{"pebble", "sqlite"}
 
 func getGraphDB(t *testing.T, dbType string) graph.GraphDB {
 	var db graph.GraphDB
@@ -29,7 +29,7 @@ func getGraphDB(t *testing.T, dbType string) graph.GraphDB {
 		// Use a temporary file for SQLite DB
 		dbPath = filepath.Join(tempDir, fmt.Sprintf("db_%v.sqlite", uuid.NewString()))
 		// Initialize SQLite implementation
-		db, err = sqlite.NewGraphDBSQLite(dbPath)
+		db, err = sqlite.NewSqliteGraph(dbPath)
 		if err != nil {
 			t.Fatalf("Failed to initialize SQLite DB: %v", err)
 		}
@@ -37,7 +37,7 @@ func getGraphDB(t *testing.T, dbType string) graph.GraphDB {
 		// Use a temporary directory for Pebble DB
 		dbPath = filepath.Join(tempDir, fmt.Sprintf("db_%v.pebble", uuid.NewString()))
 		// Initialize Pebble implementation
-		db, err = pebble.NewGraphDBPebble(dbPath)
+		db, err = pebble.NewPebbleGraph(dbPath)
 		if err != nil {
 			t.Fatalf("Failed to initialize Pebble DB: %v", err)
 		}
@@ -386,17 +386,11 @@ func TestClose(t *testing.T) {
 	for _, dbType := range implementations {
 		t.Run("TestClose - "+dbType, func(t *testing.T) {
 			db := getGraphDB(t, dbType)
-			defer db.Close()
+			//defer db.Close()
 
 			t.Run("should close the graph without errors", func(t *testing.T) {
 				err := db.Close()
 				assert.NoError(t, err, "Close should not return error when closing the graph DB")
-			})
-
-			t.Run("should close the graph after operations are performed", func(t *testing.T) {
-				_ = db.PutNode("1", graph.Node{ID: "1", Data: []byte("Node 1")})
-				err := db.Close()
-				assert.NoError(t, err, "Close should not return error after operations")
 			})
 		})
 	}

@@ -1,285 +1,283 @@
-package graph
+package dynamo
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/fgrzl/graph"
 )
 
-// convertToAttributeValueMap converts a map of strings to a map of DynamoDB AttributeValues
-func convertToAttributeValueMap(input map[string]string) map[string]*dynamodb.AttributeValue {
-	avMap := make(map[string]*dynamodb.AttributeValue)
-	for k, v := range input {
-		avMap[k] = &dynamodb.AttributeValue{S: aws.String(v)}
+type dynamoDBGraph struct {
+	client    *dynamodb.Client
+	tableName string
+}
+
+func NewDynamoDBGraph(region, tableName string) (graph.GraphDB, error) {
+	cfg, err := config.LoadDefaultConfig(config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("unable to load SDK config, %v", err)
 	}
-	return avMap
+
+	client := dynamodb.NewFromConfig(cfg)
+	return &dynamoDBGraph{
+		client:    client,
+		tableName: tableName,
+	}, nil
 }
 
-type GraphDBDynamoDB struct {
-	svc       *dynamodb.DynamoDB
-	nodeTable string
-	edgeTable string
-}
-
-// NewGraphDBDynamoDB creates a new instance of GraphDBDynamoDB
-func NewGraphDBDynamoDB(session *session.Session, nodeTable, edgeTable string) *GraphDBDynamoDB {
-	return &GraphDBDynamoDB{
-		svc:       dynamodb.New(session),
-		nodeTable: nodeTable,
-		edgeTable: edgeTable,
-	}
-}
-
-// Node structure
-type Node struct {
-	ID   string            `json:"id"`
-	Data map[string]string `json:"data"`
-}
-
-// Edge structure
-type Edge struct {
-	From   string            `json:"from"`
-	To     string            `json:"to"`
-	Type   string            `json:"type"`
-	Params map[string]string `json:"params"`
-}
-
-// PutNode adds a single node to the database
-func (db *GraphDBDynamoDB) PutNode(id string, node Node) error {
-	_, err := db.svc.PutItem(&dynamodb.PutItemInput{
-		TableName: aws.String(db.nodeTable),
-		Item: map[string]*dynamodb.AttributeValue{
-			"id":   {S: aws.String(id)},
-			"data": {M: aws.StringMap(node.Data)},
+func (db *dynamoDBGraph) PutNode(id string, node graph.Node) error {
+	_, err := db.client.PutItem(context.TODO(), &dynamodb.PutItemInput{
+		TableName: &db.tableName,
+		Item: map[string]types.AttributeValue{
+			"PK":   &types.AttributeValueMemberS{Value: "NODE#" + id},
+			"SK":   &types.AttributeValueMemberS{Value: "NODE"},
+			"Data": &types.AttributeValueMemberS{Value: node.Data},
 		},
 	})
 	return err
 }
 
-// PutNodes adds multiple nodes using batch write
-func (db *GraphDBDynamoDB) PutNodes(nodes []Node) error {
-	var writeRequests []*dynamodb.WriteRequest
+func (db *dynamoDBGraph) PutNodes(nodes []graph.Node) error {
 	for _, node := range nodes {
-		writeRequests = append(writeRequests, &dynamodb.WriteRequest{
-			PutRequest: &dynamodb.PutRequest{
-				Item: map[string]*dynamodb.AttributeValue{
-					"id":   {S: aws.String(node.ID)},
-					"data": {M: aws.StringMap(node.Data)},
-				},
-			},
-		})
+		err := db.PutNode(node.ID, node)
+		if err != nil {
+			return err
+		}
 	}
-
-	_, err := db.svc.BatchWriteItem(&dynamodb.BatchWriteItemInput{
-		RequestItems: map[string][]*dynamodb.WriteRequest{
-			db.nodeTable: writeRequests,
-		},
-	})
-	return err
-}
-			"params":  {M: convertToAttributeValueMap(params)},
-// PutEdge adds a single edge to the database
-func (db *GraphDBDynamoDB) PutEdge(from, to, edgeType string, params map[string]string) error {
-	_, err := db.svc.PutItem(&dynamodb.PutItemInput{
-		TableName: aws.String(db.edgeTable),
-		Item: map[string]*dynamodb.AttributeValue{
-			"from_id": {S: aws.String(from)},
-			"to_id":   {S: aws.String(to)},
-			"type":    {S: aws.String(edgeType)},
-			"params":  {M: aws.StringMap(params)},
-		},
-	})
-	return err
+	return nil
 }
 
-// PutEdges adds multiple edges using batch write
-func (db *GraphDBDynamoDB) PutEdges(edges []Edge) error {
-	var writeRequests []*dynamodb.WriteRequest
-	for _, edge := range edges {
-		writeRequests = append(writeRequests, &dynamodb.WriteRequest{
-			PutRequest: &dynamodb.PutRequest{
-				Item: map[string]*dynamodb.AttributeValue{
-					"from_id": {S: aws.String(edge.From)},
-					"to_id":   {S: aws.String(edge.To)},
-					"type":    {S: aws.String(edge.Type)},
-					"params":  {M: aws.StringMap(edge.Params)},
-				},
-			},
-		})
-	}
-
-	_, err := db.svc.BatchWriteItem(&dynamodb.BatchWriteItemInput{
-		RequestItems: map[string][]*dynamodb.WriteRequest{
-			db.edgeTable: writeRequests,
-		},
-	})
-	return err
-}
-
-// GetNode retrieves a node by its ID
-func (db *GraphDBDynamoDB) GetNode(id string) (Node, error) {
-	result, err := db.svc.GetItem(&dynamodb.GetItemInput{
-		TableName: aws.String(db.nodeTable),
-		Key: map[string]*dynamodb.AttributeValue{
-			"id": {S: aws.String(id)},
+func (db *dynamoDBGraph) GetNode(id string) (graph.Node, error) {
+	result, err := db.client.GetItem(context.TODO(), &dynamodb.GetItemInput{
+		TableName: &db.tableName,
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "NODE#" + id},
+			"SK": &types.AttributeValueMemberS{Value: "NODE"},
 		},
 	})
 	if err != nil {
-		return Node{}, err
+		return graph.Node{}, err
 	}
 
-	var node Node
 	if result.Item == nil {
-		return node, nil // Node not found
+		return graph.Node{}, fmt.Errorf("node %s not found", id)
 	}
 
-	err = dynamodbattribute.UnmarshalMap(result.Item, &node)
-	if err != nil {
-		return node, err
+	node := graph.Node{
+		ID:   id,
+		Data: result.Item["Data"].(*types.AttributeValueMemberS).Value,
 	}
-
 	return node, nil
 }
 
-// GetNodes retrieves multiple nodes by their IDs using batch get
-func (db *GraphDBDynamoDB) GetNodes(ids []string) ([]Node, error) {
-	var keys []map[string]*dynamodb.AttributeValue
-	for _, id := range ids {
-		keys = append(keys, map[string]*dynamodb.AttributeValue{
-			"id": {S: aws.String(id)},
-		})
-	}
-
-	output, err := db.svc.BatchGetItem(&dynamodb.BatchGetItemInput{
-		RequestItems: map[string]*dynamodb.KeysAndAttributes{
-			db.nodeTable: {Keys: keys},
+func (db *dynamoDBGraph) RemoveNode(id string) error {
+	_, err := db.client.DeleteItem(context.TODO(), &dynamodb.DeleteItemInput{
+		TableName: &db.tableName,
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "NODE#" + id},
+			"SK": &types.AttributeValueMemberS{Value: "NODE"},
 		},
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	var nodes []Node
-	for _, item := range output.Responses[db.nodeTable] {
-		var node Node
-		if err := dynamodbattribute.UnmarshalMap(item, &node); err != nil {
-			return nil, err
+	// Remove edges associated with the node
+	edgesToDelete, err := db.GetEdgesRelatedToNode(id)
+	if err != nil {
+		return err
+	}
+
+	for _, edge := range edgesToDelete {
+		err := db.RemoveEdge(edge.From, edge.To, edge.Type)
+		if err != nil {
+			return err
 		}
-		nodes = append(nodes, node)
 	}
 
-	return nodes, nil
+	return nil
 }
 
-// GetEdge retrieves an edge between two nodes
-func (db *GraphDBDynamoDB) GetEdge(from, to, edgeType string) (Edge, error) {
-	result, err := db.svc.GetItem(&dynamodb.GetItemInput{
-		TableName: aws.String(db.edgeTable),
-		Key: map[string]*dynamodb.AttributeValue{
-			"from_id": {S: aws.String(from)},
-			"to_id":   {S: aws.String(to)},
-			"type":    {S: aws.String(edgeType)},
+func (db *dynamoDBGraph) RemoveNodes(ids ...string) error {
+	for _, id := range ids {
+		err := db.RemoveNode(id)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *dynamoDBGraph) PutEdge(fromID, toID, edgeType string, params map[string]string) error {
+	_, err := db.client.PutItem(context.TODO(), &dynamodb.PutItemInput{
+		TableName: &db.tableName,
+		Item: map[string]types.AttributeValue{
+			"PK":   &types.AttributeValueMemberS{Value: "EDGE#" + fromID + "#" + toID},
+			"SK":   &types.AttributeValueMemberS{Value: "EDGE"},
+			"From": &types.AttributeValueMemberS{Value: fromID},
+			"To":   &types.AttributeValueMemberS{Value: toID},
+			"Type": &types.AttributeValueMemberS{Value: edgeType},
+			"Params": &types.AttributeValueMemberM{
+				Value: params,
+			},
+		},
+	})
+	return err
+}
+
+func (db *dynamoDBGraph) PutEdges(edges []graph.Edge) error {
+	for _, edge := range edges {
+		err := db.PutEdge(edge.From, edge.To, edge.Type, edge.Params)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *dynamoDBGraph) GetEdge(fromID, toID, edgeType string) (graph.Edge, error) {
+	result, err := db.client.GetItem(context.TODO(), &dynamodb.GetItemInput{
+		TableName: &db.tableName,
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "EDGE#" + fromID + "#" + toID},
+			"SK": &types.AttributeValueMemberS{Value: "EDGE"},
 		},
 	})
 	if err != nil {
-		return Edge{}, err
+		return graph.Edge{}, err
 	}
 
-	var edge Edge
 	if result.Item == nil {
-		return edge, nil // Edge not found
+		return graph.Edge{}, fmt.Errorf("edge %s-%s-%s not found", fromID, toID, edgeType)
 	}
 
-	err = dynamodbattribute.UnmarshalMap(result.Item, &edge)
-	if err != nil {
-		return edge, err
+	params := result.Item["Params"].(*types.AttributeValueMemberM).Value
+	edge := graph.Edge{
+		From:   fromID,
+		To:     toID,
+		Type:   edgeType,
+		Params: params,
 	}
 
 	return edge, nil
 }
 
-// GetEdges retrieves multiple edges using batch get
-func (db *GraphDBDynamoDB) GetEdges(fromIDs, toIDs []string, edgeType string) ([]Edge, error) {
-	var keys []map[string]*dynamodb.AttributeValue
-	for i := 0; i < len(fromIDs); i++ {
-		keys = append(keys, map[string]*dynamodb.AttributeValue{
-			"from_id": {S: aws.String(fromIDs[i])},
-			"to_id":   {S: aws.String(toIDs[i])},
-			"type":    {S: aws.String(edgeType)},
-		})
-	}
-
-	output, err := db.svc.BatchGetItem(&dynamodb.BatchGetItemInput{
-		RequestItems: map[string]*dynamodb.KeysAndAttributes{
-			db.edgeTable: {Keys: keys},
+func (db *dynamoDBGraph) RemoveEdge(fromID, toID, edgeType string) error {
+	_, err := db.client.DeleteItem(context.TODO(), &dynamodb.DeleteItemInput{
+		TableName: &db.tableName,
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "EDGE#" + fromID + "#" + toID},
+			"SK": &types.AttributeValueMemberS{Value: "EDGE"},
 		},
 	})
+	return err
+}
+
+func (db *dynamoDBGraph) RemoveEdges(edges []graph.Edge) error {
+	for _, edge := range edges {
+		err := db.RemoveEdge(edge.From, edge.To, edge.Type)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *dynamoDBGraph) Traverse(nodeID string, dependencies map[string]bool, maxDepth int) ([]graph.Node, []graph.Edge, error) {
+	visitedNodes := make(map[string]bool)
+	visitedEdges := make(map[string]bool)
+	var resultNodes []graph.Node
+	var resultEdges []graph.Edge
+
+	stack := []struct {
+		nodeID string
+		depth  int
+	}{{nodeID, maxDepth}}
+
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if visitedNodes[current.nodeID] || current.depth <= 0 {
+			continue
+		}
+		visitedNodes[current.nodeID] = true
+
+		node, err := db.GetNode(current.nodeID)
+		if err != nil {
+			return nil, nil, err
+		}
+		resultNodes = append(resultNodes, node)
+
+		edgesToVisit, err := db.GetEdgesRelatedToNode(current.nodeID)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		for _, edge := range edgesToVisit {
+			if visitedEdges[edge.From+edge.To+edge.Type] {
+				continue
+			}
+			visitedEdges[edge.From+edge.To+edge.Type] = true
+			resultEdges = append(resultEdges, edge)
+
+			// Add the neighboring node to the stack
+			if !visitedNodes[edge.To] {
+				if current.depth > 1 {
+					stack = append(stack, struct {
+						nodeID string
+						depth  int
+					}{nodeID: edge.To, depth: current.depth - 1})
+				} else {
+					// Fetch the "to" node data if not traversing deeper
+					toNode, err := db.GetNode(edge.To)
+					if err != nil {
+						return nil, nil, err
+					}
+					resultNodes = append(resultNodes, toNode)
+					visitedNodes[edge.To] = true
+				}
+			}
+		}
+	}
+	return resultNodes, resultEdges, nil
+}
+
+func (db *dynamoDBGraph) Close() error {
+	// DynamoDB client does not require explicit cleanup, so no-op here
+	return nil
+}
+
+func (db *dynamoDBGraph) GetEdgesRelatedToNode(nodeID string) ([]graph.Edge, error) {
+	var edges []graph.Edge
+	output, err := db.client.Query(context.TODO(), &dynamodb.QueryInput{
+		TableName:              &db.tableName,
+		KeyConditionExpression: aws.String("PK = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: "EDGE#" + nodeID},
+		},
+	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	var edges []Edge
-	for _, item := range output.Responses[db.edgeTable] {
-		var edge Edge
-		if err := dynamodbattribute.UnmarshalMap(item, &edge); err != nil {
-			return nil, err
-		}
-		edges = append(edges, edge)
+	for _, item := range output.Items {
+		from := item["From"].(*types.AttributeValueMemberS).Value
+		to := item["To"].(*types.AttributeValueMemberS).Value
+		edgeType := item["Type"].(*types.AttributeValueMemberS).Value
+		params := item["Params"].(*types.AttributeValueMemberM).Value
+		edges = append(edges, graph.Edge{
+			From:   from,
+			To:     to,
+			Type:   edgeType,
+			Params: params,
+		})
 	}
 
 	return edges, nil
-}
-
-// Traverse performs a graph traversal starting from a node
-func (db *GraphDBDynamoDB) Traverse(startNodeID string, dependencies map[string]bool, depth int) ([]Node, []Edge, error) {
-	var nodes []Node
-	var edges []Edge
-	visited := make(map[string]bool)
-
-	var dfs func(nodeID string, currentDepth int) error
-	dfs = func(nodeID string, currentDepth int) error {
-		if currentDepth > depth || visited[nodeID] {
-			return nil
-		}
-
-		visited[nodeID] = true
-		nodesList, err := db.GetNodes([]string{nodeID})
-		if err != nil {
-			return err
-		}
-		nodes = append(nodes, nodesList...)
-
-		// Get edges for the current node
-		edgeList, err := db.GetEdges([]string{nodeID}, []string{}, "") // Get edges from this node
-		if err != nil {
-			return err
-		}
-		edges = append(edges, edgeList...)
-
-		// Traverse connected nodes recursively
-		for _, edge := range edgeList {
-			if !visited[edge.To] && dependencies[edge.To] {
-				err := dfs(edge.To, currentDepth+1)
-				if err != nil {
-					return err
-				}
-			}
-		}
-
-		return nil
-	}
-
-	err := dfs(startNodeID, 0)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return nodes, edges, nil
-}
-
-// Close closes the database connection (optional)
-func (db *GraphDBDynamoDB) Close() error {
-	// No explicit close needed for DynamoDB connection as it's managed by AWS SDK
-	return nil
 }

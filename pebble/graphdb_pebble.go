@@ -14,7 +14,7 @@ type pebbleGraph struct {
 	db *pebble.DB
 }
 
-func NewGraphDBPebble(dbPath string) (graph.GraphDB, error) {
+func NewPebbleGraph(dbPath string) (graph.GraphDB, error) {
 	db, err := pebble.Open(dbPath, &pebble.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("could not open Pebble database: %v", err)
@@ -47,13 +47,6 @@ func (db *pebbleGraph) PutEdge(fromID, toID, edgeType string, params map[string]
 	err := db.db.Set(edgeKey, emptyBytes, pebble.Sync)
 	if err != nil {
 		return fmt.Errorf("failed to put forward edge from %s to %s: %v", fromID, toID, err)
-	}
-
-	// Reverse edge key
-	reverseEdgeKey := getEdgeKey(toID, fromID, edgeType)
-	err = db.db.Set(reverseEdgeKey, emptyBytes, pebble.Sync)
-	if err != nil {
-		return fmt.Errorf("failed to put reverse edge from %s to %s: %v", toID, fromID, err)
 	}
 
 	return nil
@@ -142,14 +135,6 @@ func (db *pebbleGraph) RemoveEdge(fromID, toID, edgeType string) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete forward edge from %s to %s: %v", fromID, toID, err)
 	}
-
-	// Reverse edge key
-	reverseEdgeKey := getEdgeKey(toID, fromID, edgeType)
-	err = db.db.Delete(reverseEdgeKey, pebble.NoSync)
-	if err != nil {
-		return fmt.Errorf("failed to delete reverse edge from %s to %s: %v", toID, fromID, err)
-	}
-
 	return nil
 }
 
@@ -160,10 +145,6 @@ func (db *pebbleGraph) RemoveEdges(edges []graph.Edge) error {
 		// Forward edge
 		edgeKey := getEdgeKey(edge.From, edge.To, edge.Type)
 		batch.Delete(edgeKey, pebble.NoSync)
-
-		// Reverse edge
-		reverseEdgeKey := getEdgeKey(edge.To, edge.From, edge.Type)
-		batch.Delete(reverseEdgeKey, pebble.NoSync)
 	}
 	return batch.Commit(pebble.NoSync)
 }
@@ -196,35 +177,43 @@ func (db *pebbleGraph) GetEdge(fromID, toID, edgeType string) (graph.Edge, error
 
 }
 
-// Traverse performs a depth-first search (DFS) on the graph starting from a node
-func (db *pebbleGraph) Traverse(nodeID string, dependencies map[string]bool, depth int) ([]graph.Node, []graph.Edge, error) {
-	visited := make(map[string]bool)
+func (db *pebbleGraph) Traverse(nodeID string, dependencies map[string]bool, maxDepth int) ([]graph.Node, []graph.Edge, error) {
+	visitedNodes := make(map[string]bool)
+	visitedEdges := make(map[string]bool)
 	var resultNodes []graph.Node
 	var resultEdges []graph.Edge
-	stack := []string{nodeID}
+
+	// Use a stack of tuples: (nodeID, currentDepth)
+	stack := []struct {
+		nodeID string
+		depth  int
+	}{{nodeID, maxDepth}}
 
 	for len(stack) > 0 {
+		// Pop from the stack
 		current := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		if visited[current] || depth <= 0 {
+		if visitedNodes[current.nodeID] || current.depth <= 0 {
 			continue
 		}
-		visited[current] = true
+		visitedNodes[current.nodeID] = true
 
-		// Fetch the node data
-		nodeKey := getNodeKey(current)
+		// Fetch the current node data
+		nodeKey := getNodeKey(current.nodeID)
 		data, closer, err := db.db.Get(nodeKey)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to retrieve node data for %s: %v", current, err)
+			if err == pebble.ErrNotFound {
+				continue
+			}
+			return nil, nil, fmt.Errorf("failed to retrieve node data for %s: %v", current.nodeID, err)
 		}
 		defer closer.Close()
 
 		node := graph.Node{
-			ID:   current,
+			ID:   current.nodeID,
 			Data: data,
 		}
-
 		resultNodes = append(resultNodes, node)
 
 		// Collect related edges
@@ -236,33 +225,71 @@ func (db *pebbleGraph) Traverse(nodeID string, dependencies map[string]bool, dep
 
 		for iter.First(); iter.Valid(); iter.Next() {
 			if !bytes.HasPrefix(iter.Key(), []byte("edge:")) {
-				break
+				continue
 			}
 			key := iter.Key()
 			parts := bytes.Split(key, []byte(":"))
-			if string(parts[1]) == current {
-				// Reverse edge direction
+			if string(parts[1]) == current.nodeID {
 				edge := graph.Edge{
 					From: string(parts[1]),
 					To:   string(parts[2]),
 					Type: string(parts[3]),
 				}
 
+				edgeKey := getEdgeKey(edge.From, edge.To, edge.Type)
+				if visitedEdges[string(edgeKey)] {
+					continue
+				}
+				visitedEdges[string(edgeKey)] = true
+
 				resultEdges = append(resultEdges, edge)
 
-				// Add the neighboring node to the stack
-				stack = append(stack, string(parts[2]))
+				// Add the neighboring node to the stack or fetch its data if at max depth
+				toNodeID := string(parts[2])
+				if !visitedNodes[toNodeID] {
+					if current.depth > 1 {
+						// Add to stack for further traversal
+						stack = append(stack, struct {
+							nodeID string
+							depth  int
+						}{nodeID: toNodeID, depth: current.depth - 1})
+					} else {
+						// Fetch and collect "to" node data if not traversing deeper
+						toNodeKey := getNodeKey(toNodeID)
+						toNodeData, closer, err := db.db.Get(toNodeKey)
+						if err != nil && err != pebble.ErrNotFound {
+							return nil, nil, fmt.Errorf("failed to retrieve node data for %s: %v", toNodeID, err)
+						}
+						if err == nil {
+							defer closer.Close()
+							resultNodes = append(resultNodes, graph.Node{
+								ID:   toNodeID,
+								Data: toNodeData,
+							})
+							visitedNodes[toNodeID] = true
+						}
+					}
+				}
 			}
 		}
-		// Decrease depth as we go deeper
-		depth--
 	}
 
 	return resultNodes, resultEdges, nil
 }
 
 func (db *pebbleGraph) Close() error {
-	return db.db.Close()
+	if db.db == nil {
+		return nil // Already closed, no action needed
+	}
+
+	err := db.db.Close()
+	if err != nil {
+		return fmt.Errorf("failed to close the database: %v", err)
+	}
+
+	// Set db.db to nil to mark it as closed
+	db.db = nil
+	return nil
 }
 
 func getNodeKey(nodeID string) []byte {
