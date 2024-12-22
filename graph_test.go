@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var implementations = []string{"sqlite"}
+var implementations = []string{"pebble"}
 
 func getGraphDB(t *testing.T, dbType string) graph.GraphDB {
 	var db graph.GraphDB

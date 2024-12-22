@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/fgrzl/graph"
@@ -15,7 +14,6 @@ type GraphDBPebble struct {
 }
 
 func NewGraphDBPebble(dbPath string) (graph.GraphDB, error) {
-	// Open the Pebble database
 	db, err := pebble.Open(dbPath, &pebble.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("could not open Pebble database: %v", err)
@@ -23,12 +21,10 @@ func NewGraphDBPebble(dbPath string) (graph.GraphDB, error) {
 	return &GraphDBPebble{db: db}, nil
 }
 
-// Helper function to serialize data (JSON encoding)
 func serialize(value interface{}) ([]byte, error) {
 	return json.Marshal(value)
 }
 
-// Helper function to deserialize data (JSON decoding)
 func deserialize(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
 }
@@ -55,53 +51,68 @@ func (db *GraphDBPebble) PutNodes(nodes []graph.Node) error {
 		}
 		batch.Set(nodeKey, serializedNode, pebble.Sync)
 	}
-
 	return batch.Commit(pebble.Sync)
 }
 
-// PutEdge inserts or updates an edge in the graph
+// PutEdge inserts or updates an edge in the graph, supporting bidirectional lookups
 func (db *GraphDBPebble) PutEdge(fromID, toID, edgeType string, params map[string]string) error {
+	// Forward edge key
 	edgeKey := []byte("edge:" + fromID + ":" + toID + ":" + edgeType)
 	serializedEdge, err := serialize(params)
 	if err != nil {
 		return fmt.Errorf("failed to serialize edge from %s to %s: %v", fromID, toID, err)
 	}
 
-	return db.db.Set(edgeKey, serializedEdge, pebble.Sync)
+	// Set the forward edge
+	err = db.db.Set(edgeKey, serializedEdge, pebble.Sync)
+	if err != nil {
+		return fmt.Errorf("failed to put forward edge from %s to %s: %v", fromID, toID, err)
+	}
+
+	// Reverse edge key
+	reverseEdgeKey := []byte("edge:" + toID + ":" + fromID + ":" + edgeType)
+	err = db.db.Set(reverseEdgeKey, serializedEdge, pebble.Sync)
+	if err != nil {
+		return fmt.Errorf("failed to put reverse edge from %s to %s: %v", toID, fromID, err)
+	}
+
+	return nil
 }
 
-// PutEdges inserts or updates multiple edges in the graph
+// PutEdges inserts or updates multiple edges in the graph, supporting bidirectional lookups
 func (db *GraphDBPebble) PutEdges(edges []graph.Edge) error {
 	batch := db.db.NewBatch()
 	for _, edge := range edges {
+		// Forward edge
 		edgeKey := []byte("edge:" + edge.From + ":" + edge.To + ":" + edge.Type)
 		serializedEdge, err := serialize(edge.Params)
 		if err != nil {
 			return fmt.Errorf("failed to serialize edge from %s to %s: %v", edge.From, edge.To, err)
 		}
 		batch.Set(edgeKey, serializedEdge, pebble.Sync)
-	}
 
+		// Reverse edge
+		reverseEdgeKey := []byte("edge:" + edge.To + ":" + edge.From + ":" + edge.Type)
+		batch.Set(reverseEdgeKey, serializedEdge, pebble.Sync)
+	}
 	return batch.Commit(pebble.Sync)
 }
 
-// RemoveNode removes a node and its associated edges
+// RemoveNode removes a node and its associated edges, supporting bidirectional edge cleanup
 func (db *GraphDBPebble) RemoveNode(id string) error {
+	batch := db.db.NewBatch()
+
 	// Remove the node
 	nodeKey := []byte("node:" + id)
-	err := db.db.Delete(nodeKey, pebble.NoSync)
-	if err != nil {
-		return fmt.Errorf("failed to remove node with ID %s: %v", id, err)
-	}
+	batch.Delete(nodeKey, pebble.NoSync)
 
-	// Remove edges related to the node
+	// Remove edges related to the node (both forward and reverse)
 	iter, err := db.db.NewIter(&pebble.IterOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to create iterator: %v", err)
+		return err
 	}
 	defer iter.Close()
 
-	// Collect and remove edges
 	for iter.First(); iter.Valid(); iter.Next() {
 		if !bytes.HasPrefix(iter.Key(), []byte("edge:")) {
 			break
@@ -109,33 +120,29 @@ func (db *GraphDBPebble) RemoveNode(id string) error {
 		key := iter.Key()
 		parts := bytes.Split(key, []byte(":"))
 		if string(parts[1]) == id || string(parts[2]) == id {
-			if err := db.db.Delete(key, pebble.NoSync); err != nil {
-				log.Printf("Failed to remove edge %s: %v", key, err)
-			}
+			batch.Delete(key, pebble.NoSync)
 		}
 	}
 
-	return nil
+	return batch.Commit(pebble.NoSync)
 }
 
 // RemoveNodes removes multiple nodes and their associated edges
 func (db *GraphDBPebble) RemoveNodes(ids ...string) error {
 	batch := db.db.NewBatch()
 
-	// Remove each node and its edges
 	for _, nodeID := range ids {
 		// Remove the node
 		nodeKey := []byte("node:" + nodeID)
 		batch.Delete(nodeKey, pebble.NoSync)
 
-		// Remove edges related to the node
+		// Remove edges related to the node (both forward and reverse)
 		iter, err := db.db.NewIter(&pebble.IterOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to create iterator: %v", err)
+			return err
 		}
 		defer iter.Close()
 
-		// Collect and remove edges
 		for iter.First(); iter.Valid(); iter.Next() {
 			if !bytes.HasPrefix(iter.Key(), []byte("edge:")) {
 				break
@@ -151,18 +158,36 @@ func (db *GraphDBPebble) RemoveNodes(ids ...string) error {
 	return batch.Commit(pebble.NoSync)
 }
 
-// RemoveEdge removes a specific edge
+// RemoveEdge removes a specific edge, including its reverse counterpart
 func (db *GraphDBPebble) RemoveEdge(fromID, toID, edgeType string) error {
+	// Forward edge key
 	edgeKey := []byte("edge:" + fromID + ":" + toID + ":" + edgeType)
-	return db.db.Delete(edgeKey, pebble.NoSync)
+	err := db.db.Delete(edgeKey, pebble.NoSync)
+	if err != nil {
+		return fmt.Errorf("failed to delete forward edge from %s to %s: %v", fromID, toID, err)
+	}
+
+	// Reverse edge key
+	reverseEdgeKey := []byte("edge:" + toID + ":" + fromID + ":" + edgeType)
+	err = db.db.Delete(reverseEdgeKey, pebble.NoSync)
+	if err != nil {
+		return fmt.Errorf("failed to delete reverse edge from %s to %s: %v", toID, fromID, err)
+	}
+
+	return nil
 }
 
-// RemoveEdges removes multiple edges
+// RemoveEdges removes multiple edges, including their reverse counterparts
 func (db *GraphDBPebble) RemoveEdges(edges []graph.Edge) error {
 	batch := db.db.NewBatch()
 	for _, edge := range edges {
+		// Forward edge
 		edgeKey := []byte("edge:" + edge.From + ":" + edge.To + ":" + edge.Type)
 		batch.Delete(edgeKey, pebble.NoSync)
+
+		// Reverse edge
+		reverseEdgeKey := []byte("edge:" + edge.To + ":" + edge.From + ":" + edge.Type)
+		batch.Delete(reverseEdgeKey, pebble.NoSync)
 	}
 	return batch.Commit(pebble.NoSync)
 }
@@ -214,7 +239,6 @@ func (db *GraphDBPebble) Traverse(nodeID string, dependencies map[string]bool, d
 		current := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		// If we've exceeded the depth or already visited this node, skip it
 		if visited[current] || depth <= 0 {
 			continue
 		}
@@ -234,13 +258,12 @@ func (db *GraphDBPebble) Traverse(nodeID string, dependencies map[string]bool, d
 			return nil, nil, fmt.Errorf("failed to deserialize node data for %s: %v", current, err)
 		}
 
-		// Add the node to the result
 		resultNodes = append(resultNodes, node)
 
-		// Find the edges associated with this node and add the connected nodes to the stack
+		// Collect related edges
 		iter, err := db.db.NewIter(&pebble.IterOptions{})
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create iterator: %v", err)
+			return nil, nil, err
 		}
 		defer iter.Close()
 
@@ -254,7 +277,7 @@ func (db *GraphDBPebble) Traverse(nodeID string, dependencies map[string]bool, d
 				toID := string(parts[2])
 				stack = append(stack, toID)
 
-				// Deserialize edge data
+				// Retrieve edge data
 				edgeKey := []byte("edge:" + current + ":" + toID)
 				edgeData, closer, err := db.db.Get(edgeKey)
 				if err != nil {
@@ -268,17 +291,14 @@ func (db *GraphDBPebble) Traverse(nodeID string, dependencies map[string]bool, d
 					return nil, nil, fmt.Errorf("failed to deserialize edge data: %v", err)
 				}
 
-				// Add the edge to the result
 				resultEdges = append(resultEdges, edge)
 			}
 		}
 	}
 
-	// Return the list of nodes and edges
 	return resultNodes, resultEdges, nil
 }
 
-// Close closes the Pebble database
 func (db *GraphDBPebble) Close() error {
 	return db.db.Close()
 }
