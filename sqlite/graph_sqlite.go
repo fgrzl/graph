@@ -34,6 +34,8 @@ func NewSqliteGraph(dbPath string) (graph.GraphDB, error) {
 		params TEXT,
 		PRIMARY KEY (from_id, to_id, type)
 	);
+
+	CREATE INDEX IF NOT EXISTS idx_edges_to_id_type_from_id ON edges (to_id, type, from_id);
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("could not create tables: %v", err)
@@ -44,11 +46,7 @@ func NewSqliteGraph(dbPath string) (graph.GraphDB, error) {
 
 // PutNode inserts or updates a node
 func (db *sqliteGraph) PutNode(id string, node graph.Node) error {
-
-	_, err := db.db.Exec(`
-		INSERT OR REPLACE INTO nodes (id, data)
-		VALUES (?, ?);
-	`, id, node.Data)
+	_, err := db.db.Exec(`INSERT OR REPLACE INTO nodes (id, data) VALUES (?, ?);`, id, node.Data)
 	return err
 }
 
