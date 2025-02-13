@@ -1,6 +1,6 @@
 module github.com/fgrzl/graph
 
-go 1.23.4
+go 1.23.0
 
 require (
 	github.com/cockroachdb/pebble v1.1.3
